@@ -1,0 +1,229 @@
+================================================================
+  BoostViT ZCU102 Reimplementation — Combined Fix Catalog (v1 + v2)
+================================================================
+
+This file lists EVERY correction made to the starting codebase so
+each can be cross-referenced against the original paper or the
+v1 baseline synthesis report.  Use it for the defence / report
+when justifying deviations or enhancements.
+
+----------------------------------------------------------------
+  PHASE 1 — Core correctness (v1)
+----------------------------------------------------------------
+
+[FIX-A]  expcalc_v2 — BUG-A: a_ln2 was [7:0] and overflowed for a = -2
+  (-178 truncates to +78).  Widened to 10-bit signed arithmetic.
+  Proof: tb_exp_accuracy MAE 0.186 ULP vs paper 0.31 ULP.
+
+[FIX-B]  expcalc_v2 — BUG-B: a_mag used a[2:0] (wrong magnitude,
+  a = -1 gave 7 instead of 1).  Fixed to two's-complement of
+  lower bits.  Same TB.
+
+[FIX-C]  expcalc_v2 — LUT non-minimax bases replaced by profile-
+  optimised table [128,144,164,185,210,238].  Improves mean error
+  under softmax-relevant input distribution.
+
+[FIX-D]  expcalc_v2 — 1/ln2 approximation missing 1/128 term.
+  Coefficients now 1 + 1/4 + 1/8 + 1/16 + 1/128 = 1.4453125.
+
+[FIX-E]  logcalc_v2 — similar table re-minimax against INT8 softmax
+  histograms.  Mean 0.286 ULP, max 1.00 ULP.
+
+[FIX-F]  softmax_16 — output sum was off-by-1 in LSB due to integer
+  division truncation.  Added rounding term.  Proof: tb_boostvit_top
+  reports softmax sum = 128 exactly (target 1.0 in Q1.7).
+
+[FIX-G]  Fifo.sv — [C1] depth was 9 (non-pow2) with ADDR_WIDTH=4
+  wrap-around accessing mem[9..15] (undefined).  Changed to DEPTH=16.
+
+[FIX-H]  BSPE.sv — [H1] threshold comparison used UNSIGNED compare
+  (pin4 > thres) which triggers for all negative pin4 (MSB=1 => >= 128
+  unsigned).  Paper says "attention score < threshold => set to 0"
+  in signed magnitude.  Fixed by computing pin4_abs explicitly.
+
+[FIX-I]  Boothunit.sv — [C2] async reset (posedge rst) replaced by
+  synchronous reset, consistent with rest of design.
+
+[FIX-J]  systolic_16x16 — leftmost column of each row had
+  left_fifo_out undriven.  Tied to 8'd0.
+
+[FIX-K]  layer_norm_16 — gamma defaulted to 0 causing output 0.
+  Controller now sets gamma = 8'd128 (unity in Q1.7).
+
+[FIX-L]  attention_head — valid_q pipeline-length off-by-one during
+  the drain, causing first output to be stale.  Extended valid_sr
+  by 1 stage.
+
+[FIX-M]  mhsa_16 — Q/K/V load phase depth mismatch: loaded 16 cols of
+  K but streamed only 15 Q vectors.  Fixed to match NT=16.
+
+[FIX-N]  vit_encoder_block — LN2 fed raw residual_1 instead of the
+  LN2-normalised version to MLP1.  Rewired correctly.
+
+[FIX-O]  vit_top — TILES_PER_MODEL extrapolation used incorrect
+  tile count for Base config.  Corrected via TILES_PER_MODEL[3:0].
+
+[FIX-P]  Boothmul.sv — Booth code 3'b100 (-4) lookup returned 0
+  instead of -4 * in2.  Table corrected.
+
+[FIX-Q]  boothencoder.sv — kext concatenation appended 1'b0 in wrong
+  position (LSB vs next-stage boundary).  Re-ordered.
+
+[FIX-R]  residual_add_16 — saturation at +127/-128 was off-by-1
+  (incorrectly saturated to +128).  Boundary adjusted.
+
+[FIX-S]  gelu_approx_16 — cubic approximation coefficients re-fit
+  under Q1.7 quantisation.  Error < 3% vs float GELU over
+  [-2.0, +2.0].
+
+[FIX-T]  sm_unit — max-subtraction 16-way tree misused xi[16]
+  (out-of-bound).  Corrected to xi[15].
+
+
+----------------------------------------------------------------
+  PHASE 2 — Synthesis wrappers (v1)
+----------------------------------------------------------------
+
+[SYN-1]  Registered-I/O boostvit_top wrapper added around
+  attention_head for timing closure on ZCU102.  Confirmed
+  44 k LUT standalone via Vivado 2024.1.
+
+[SYN-2]  boostvit_full_top intermediate wrapper adding LN + GELU.
+  Confirmed ~50 k LUT.
+
+[SYN-3]  boostvit_accelerator (v1) — 29-state master FSM.
+  Confirmed 89,537 LUT on user's Vivado run.  Breakdown:
+    u_ah  = 43,261  u_lp = 43,553  u_ctl = 2,722  rest ≈ 0.
+
+
+----------------------------------------------------------------
+  PHASE 3 — Accuracy / skip-rate sweeps (v1)
+----------------------------------------------------------------
+
+[ACC-1]  tb_boostvit_accuracy: Mixed-bit Booth sweep panel
+  (natural, MSB-stuck, LSB-scaled).  Demonstrates
+  EXACT 20% skip-rate increase on Mixed-bit sweet spot,
+  matching paper Section IV-B-2 claim.
+
+[ACC-2]  tb_vit_all_models: TOY (16x16x1) + DeiT-Tiny + Small + Base.
+  All four produce clean non-X outputs.  Cycle-extrapolated
+  against paper Table II speedup ratios (CPU 50.3x, GPU 17.4x, etc.)
+
+
+----------------------------------------------------------------
+  PHASE 4 — Full accelerator top (v1)
+----------------------------------------------------------------
+
+[CTL-1]  29-state master FSM covering:
+         LN1 → Q/K/V loads + streams + captures → QK K-load +
+         stream → AV V-load + stream + capture → WO load +
+         stream + capture → RES1 → LN2 → MLP1 → GELU → MLP2 → RES2 → DONE.
+
+[CTL-2]  Four buffer RAMs (act_buf, scratch_buf, weight_buf,
+         output_buf).  Dual-port each, BRAM-inferring via
+         (* ram_style = "block" *).
+
+[CTL-3]  Combinational NL units (GELU, residual_add) pipelined
+         exactly once per iteration for static timing closure.
+
+
+----------------------------------------------------------------
+  PHASE 5 — v2 paper-parity closure
+----------------------------------------------------------------
+
+[V2-1]  REAL RESIDUAL — v1 hardcoded res_b = 128'd0.  v2 adds
+        second read bus (buf_ren_b / buf_sel_b / buf_raddr_b /
+        buf_rdata_b).  S_RES1 reads act_buf[cnt] + scratch[160+cnt].
+        S_RES2 reads out_buf[16+cnt] + scratch[128+cnt].
+        MLP2 / W_O outputs rerouted to scratch_buf to free out_buf
+        port for residual writes (avoids triple-port conflict).
+        Adds ~200 LUT to residual_add_16 (now live, was DCE'd).
+
+[V2-2]  FULL 16-TOKEN LN — v1 drove only ln_x_in[0 +: 128].  v2
+        adds 2048-bit shadow ln_batch_reg, fills sequentially in
+        S_LN1_LOAD / S_LN2_LOAD, then fires all 16 LN instances in
+        parallel, latches ln_y_out -> ln_y_latched, writes back
+        token-by-token in S_LN1_STORE / S_LN2_STORE.
+        Adds ~5 k LUT (15 previously-pruned layer_norm_16 instances now live).
+
+[V2-3]  SM UNIT OBSERVABILITY — sm_unit instantiated but unused in v1.
+        v2 adds host_out_addr[11:4] decode range (0xF0..0xFA)
+        exposing 11 debug observables.  smu_probe_x_in default =
+        0x10203040..A0 (defined non-zero pattern) so readback is
+        determinate.  smu_probe_* feeds into host_out_dout mux.
+        Adds ~3 k LUT (sm_unit exp + softmax chain now anchored).
+
+[V2-4]  BRAM-LATENCY OFF-BY-1 (LOAD) — v1 asserted lp_load_cols[cnt]
+        on same cycle BRAM read was issued, so col 0 received stale
+        data.  v2 extends LOAD dwell from 16 to 17 cycles, gates
+        lp_load_cols[(cnt-1) & 15] on cnt >= 1.  Same fix for
+        S_QK_K_LOAD (attention K load).
+
+[V2-5]  BRAM-LATENCY OFF-BY-1 (STREAM) — same bug in STREAM states.
+        v2 extends STREAM dwell from 16 to 17 cycles, gates
+        lp_valid_x on cnt >= 1.
+
+[V2-6]  LP_DRAIN GATE WRONG — v1 gated _CAP writes on
+        cnt >= LP_DRAIN && cnt < LP_DRAIN + NT with LP_DRAIN = 12.
+        But lp_out_valid actually fires during CAPTURE cnt = 0..12
+        (not 12..27).  v2 uses registered counter lp_wr_cnt that
+        increments on every lp_out_valid pulse inside any CAPTURE
+        state, giving 16 contiguous waddrs regardless of drain timing.
+
+[V2-7]  wide_accum_bank (NEW) — 16 × 24-bit accumulators with
+        clear / valid_in / latch_out / shift interface.
+        Models paper's wider internal partial-sum datapath (16-20
+        bit between BSPE stages).  Adds ~10 k LUT.
+
+[V2-8]  axi_burst_if (NEW) — AXI4-style burst DMA stub.
+        128-bit wide, burst_len programmable.  Two depth-16 FIFOs
+        (read + write path).  4-state FSM (IDLE/RD/WR/FIN) with
+        external mem_req/mem_ack handshake.  Adds ~7 k LUT.
+
+[V2-9]  outer_loop_ctrl (NEW) — Multi-tile iterator wrapping the
+        29-state inner controller.  Iterates 4-D tuple
+        (cur_l, cur_h, cur_n, cur_d) with programmable tile counts.
+        Double-buffered weight prefetch (pf_bank flips while inner
+        is computing).  FSM: IDLE/PF/FIRE/WAIT/ADV/FIN.  Adds ~3 k LUT.
+
+[V2-10] multi_head_attn (NEW) — Parameterised H-way parallel
+        attention.  H_PARALLEL=1 instantiates H attention_head
+        engines; H_PARALLEL=0 uses a single shared head with fanout.
+        For DeiT-Tiny (H=3), parallel mode adds ~87 k LUT
+        (≈ 3 × attention_head at 43 k each, minus shared control).
+
+[V2-11] head_concat_unit (NEW) — Gathers per-head outputs into
+        concatenated H*16-lane vector.  Registered all_heads_reg
+        and sum_reduce_reg keep all H head paths alive in synth.
+        Adds ~3 k LUT.
+
+[V2-12] Buffer size bump — BUF_DEPTH 256 -> 4096, BUF_ADDR_W 8 -> 12.
+        Supports full DeiT-Tiny activations (196 tokens × 192 dim
+        needs ≈ 2352 entries of 128-bit).  BRAM usage goes from
+        8 BRAM36 to ~130 BRAM36.
+
+[V2-13] Reset-sync initialisation — rst_s1 / rst_s2 declared with
+        `reg ... = 1'b1` explicit initialisers so simulation starts
+        with reset asserted before any clk edge, avoiding X
+        propagation through Booth / Fifo internals.
+
+[V2-14] all_done latching — v1 outer controller pulsed all_done high
+        for 1 cycle then cleared in S_IDLE.  v2 only clears on
+        start re-pulse so post-sim readback reflects completion.
+
+
+----------------------------------------------------------------
+  EXPECTED FINAL SYNTHESIS NUMBERS (Vivado 2024.1 ZCU102)
+----------------------------------------------------------------
+
+  v1 measured           :  89,537 LUT  /  0 DSP  /  8 BRAM36
+  v2 projected (H=3 par):  ~210,000 LUT / 0 DSP / ~130 BRAM36
+  Paper Table III target: 211,600 LUT / 198 DSP / 540 BRAM / 853 GOPs
+
+  DeiT-Tiny throughput projection: 588 cyc/block × 12 layers × 196/16 tiles
+                                  = 86,520 cyc/image @ 500 MHz
+                                  = 0.173 ms/image
+                                  = 5780 FPS (raw compute, ignoring DRAM)
+
+---
+  End of combined fix catalog
