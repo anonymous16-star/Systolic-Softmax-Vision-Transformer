@@ -1,6 +1,6 @@
-# BoostViT ZCU102 Accelerator — Full Fig. 6 Implementation (v2)
+# BoostViT ZCU102 Accelerator
 
-Reimplementation of BoostViT (TCAS-I Nov 2025, §V-B) targeting
+Reimplementation of BoostViT targeting
 **Xilinx Zynq UltraScale+ ZCU102 (XCZU7EV)** at the full paper datapath.
 INT8, target 300–500 MHz.
 
