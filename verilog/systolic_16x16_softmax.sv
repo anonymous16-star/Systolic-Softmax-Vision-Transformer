@@ -1,91 +1,30 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// systolic_16x16_softmax  --  16x16 Booth-skipping systolic array
-//                              per-row expcalc + softmax_from_exp_16
-// =============================================================================
-//
-// ARCHITECTURE:
-//   - 16 rows x 16 columns of BSPE (Booth-Skipping Processing Elements)
-//   - Each PE computes K[row] * Q[col] via Radix-4 Booth with zero-skip
-//   - Partial sums flow DOWNWARD (pin -> psum -> next row pin)
-//   - Activations q flow DOWNWARD (data_out of row r feeds q of row r+1)
-//   - FIFO chain accumulates horizontally: rightmost PE in column 15 holds
-//     the full row dot-product = sum(K[row] * Q[col], col=0..15)
-//
-//   At the RIGHT EDGE of EACH ROW (col 15):
-//     fifo_out_right = horizontal accumulation of all 16 column psums for that row
-//     This is the row's complete dot-product = signed INT8 logit.
-//
-//   ROW-END expcalc_v2 (16 instances, one per row):
-//     Computes e^(logit) in Q1.7 unsigned, range [47..128].
-//     Its outputs feed BOTH the debug e_row port AND softmax_from_exp_16
-//     directly -- NO REDUNDANT EXP RECOMPUTATION inside softmax.
-//
-//   softmax_from_exp_16 (1 instance, combinational):
-//     Consumes the 16 already-computed exp values.  Produces:
-//        sm_out[127:0]  = normal softmax e[i] / sum(e)   Q1.7 unsigned (PRIMARY)
-//        lsm_out[127:0] = log-softmax                    Q3.5 signed   (DEBUG)
-//
-// DATA ENCODINGS:
-//   k[row*8+:8] : signed INT8 weight (stationary)
-//   q[col]      : signed INT8 activation (flows down column)
-//   logit       : signed INT8 (Q1.7) = the row dot-product
-//   exp_val     : unsigned Q1.7 = round(e^logit * 128), range [47..128]
-//   sm_out      : unsigned Q1.7 = round((e/sum) * 128),  range [3..128]
-//   lsm_out     : signed   Q3.5 = round(ln(e/sum) * 32), range [-89..0]
-//
-// DESIGN CHANGES vs the previous rev of this file:
-//   [1] softmax_16 (recomputed exp internally -> wasteful) REPLACED with
-//       softmax_from_exp_16 which accepts e_in directly.
-//   [2] New sm_out primary output (normal softmax) - this is what MHSA uses
-//       to weight the V matrix.  lsm_out is kept as a debug/analysis port.
-//   [3] e_row now exposes the true per-row exp values (used by softmax).
-//
-// PORT SUMMARY:
-//   clk, rst         : clock (rising) / synchronous reset
-//   load_kc1..16     : per-column load_k strobes
-//   k[127:0]         : 16 packed INT8 weights (row r uses k[r*8+:8])
-//   q0..q15          : 16 INT8 activations entering at top of each column
-//   valid_q          : activation valid strobe
-//   sm_out  [127:0]  : 16 packed Q1.7 unsigned softmax          <-- PRIMARY
-//   lsm_out [127:0]  : 16 packed Q3.5 signed log-softmax        <-- DEBUG
-//   e_row   [127:0]  : 16 packed Q1.7 unsigned exp values       <-- DEBUG
-//   es_sum  [11:0]   : sum of exp values                        <-- DEBUG
-//   exp_valid        : 1 when outputs are registered-valid
-//
-// =============================================================================
+
 module systolic_16x16_softmax (
     input  wire        clk,
     input  wire        rst,
 
-    // Per-column load_k strobes
     input  wire load_kc1,  load_kc2,  load_kc3,  load_kc4,
     input  wire load_kc5,  load_kc6,  load_kc7,  load_kc8,
     input  wire load_kc9,  load_kc10, load_kc11, load_kc12,
     input  wire load_kc13, load_kc14, load_kc15, load_kc16,
 
-    // Packed weight bus: row r uses k[r*8+:8]
     input  wire [127:0] k,
 
-    // Column activations (top of each column)
+    
     input  wire [7:0]  q0,  q1,  q2,  q3,
     input  wire [7:0]  q4,  q5,  q6,  q7,
     input  wire [7:0]  q8,  q9,  q10, q11,
     input  wire [7:0]  q12, q13, q14, q15,
     input  wire        valid_q,
 
-    // Softmax outputs
-    output reg  [127:0] sm_out,     // 16 packed Q1.7 unsigned softmax (PRIMARY, for V mul)
-    output reg  [127:0] lsm_out,    // 16 packed signed Q3.5 log-softmax (debug)
-    output reg  [127:0] e_row,      // debug: 16 expcalc_v2 outputs (pre-softmax)
-    output reg  [11:0]  es_sum,     // debug: sum of exp
-    output reg          exp_valid   // output valid (registered)
+    output reg  [127:0] sm_out,     
+    output reg  [127:0] lsm_out,    
+    output reg  [127:0] e_row,      
+    output reg  [11:0]  es_sum,     
+    output reg          exp_valid   
 );
 
-    // =========================================================================
-    // FIFO horizontal-chain wires f[row][col]
-    // Naming: row 0..15 hex digits 0..f, col 0..15
-    // =========================================================================
     wire [7:0] f00,f01,f02,f03,f04,f05,f06,f07,f08,f09,f010,f011,f012,f013,f014,f015;
     wire [7:0] f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f110,f111,f112,f113,f114,f115;
     wire [7:0] f20,f21,f22,f23,f24,f25,f26,f27,f28,f29,f210,f211,f212,f213,f214,f215;
@@ -102,10 +41,7 @@ module systolic_16x16_softmax (
     wire [7:0] fd0,fd1,fd2,fd3,fd4,fd5,fd6,fd7,fd8,fd9,fd10,fd11,fd12,fd13,fd14,fd15;
     wire [7:0] fe0,fe1,fe2,fe3,fe4,fe5,fe6,fe7,fe8,fe9,fe10,fe11,fe12,fe13,fe14,fe15;
     wire [7:0] ff0,ff1,ff2,ff3,ff4,ff5,ff6,ff7,ff8,ff9,ff10,ff11,ff12,ff13,ff14,ff15;
-
-    // =========================================================================
-    // data_out (q pass-through) wires d[row][col] -- feed q of row below
-    // =========================================================================
+    
     wire [7:0] d00,d01,d02,d03,d04,d05,d06,d07,d08,d09,d010,d011,d012,d013,d014,d015;
     wire [7:0] d10,d11,d12,d13,d14,d15,d16,d17,d18,d19,d110,d111,d112,d113,d114,d115;
     wire [7:0] d20,d21,d22,d23,d24,d25,d26,d27,d28,d29,d210,d211,d212,d213,d214,d215;
@@ -122,9 +58,7 @@ module systolic_16x16_softmax (
     wire [7:0] dd0,dd1,dd2,dd3,dd4,dd5,dd6,dd7,dd8,dd9,dd10,dd11,dd12,dd13,dd14,dd15;
     wire [7:0] de0,de1,de2,de3,de4,de5,de6,de7,de8,de9,de10,de11,de12,de13,de14,de15;
 
-    // =========================================================================
-    // psum wires ps[row][col] -- vertical: psum of pe[r][c] feeds pin of pe[r+1][c]
-    // =========================================================================
+    
     wire [7:0] ps00,ps01,ps02,ps03,ps04,ps05,ps06,ps07,ps08,ps09,ps010,ps011,ps012,ps013,ps014,ps015;
     wire [7:0] ps10,ps11,ps12,ps13,ps14,ps15,ps16,ps17,ps18,ps19,ps110,ps111,ps112,ps113,ps114,ps115;
     wire [7:0] ps20,ps21,ps22,ps23,ps24,ps25,ps26,ps27,ps28,ps29,ps210,ps211,ps212,ps213,ps214,ps215;
@@ -142,19 +76,8 @@ module systolic_16x16_softmax (
     wire [7:0] pse0,pse1,pse2,pse3,pse4,pse5,pse6,pse7,pse8,pse9,pse10,pse11,pse12,pse13,pse14,pse15;
     wire [7:0] psf0,psf1,psf2,psf3,psf4,psf5,psf6,psf7,psf8,psf9,psf10,psf11,psf12,psf13,psf14,psf15;
 
-    // =========================================================================
-    // PE ARRAY  (16 rows × 16 columns)
-    //
-    // Conventions:
-    //   k[row*8+:8]       -- weight, same for all 16 cols of that row
-    //   q                 -- activation: external q[col] for row 0,
-    //                        data_out of row above for rows 1..15
-    //   pin               -- 8'd0 for row 0, psum of row above for rows 1..15
-    //   left_fifo_out     -- 8'd0 for col 0, fifo_out_right of left PE for cols 1..15
-    //   load_k            -- per-column strobe
-    // =========================================================================
-
-    // ---- ROW 0  (q from external inputs, pin = 0) ----
+  
+    
     BSPE pe00 (.clk(clk),.rst(rst),.k(k[7:0]),    .q(q0), .pin(8'd0),.psum(ps00),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f00), .fifo_read_out(),.data_out(d00));
     BSPE pe01 (.clk(clk),.rst(rst),.k(k[7:0]),    .q(q1), .pin(8'd0),.psum(ps01),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f00), .left_read(),.right_inread(1'b1),.fifo_out_right(f01), .fifo_read_out(),.data_out(d01));
     BSPE pe02 (.clk(clk),.rst(rst),.k(k[7:0]),    .q(q2), .pin(8'd0),.psum(ps02),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f01), .left_read(),.right_inread(1'b1),.fifo_out_right(f02), .fifo_read_out(),.data_out(d02));
@@ -172,7 +95,6 @@ module systolic_16x16_softmax (
     BSPE pe014(.clk(clk),.rst(rst),.k(k[7:0]),    .q(q14),.pin(8'd0),.psum(ps014),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f013),.left_read(),.right_inread(1'b1),.fifo_out_right(f014),.fifo_read_out(),.data_out(d014));
     BSPE pe015(.clk(clk),.rst(rst),.k(k[7:0]),    .q(q15),.pin(8'd0),.psum(ps015),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f014),.left_read(),.right_inread(1'b1),.fifo_out_right(f015),.fifo_read_out(),.data_out(d015));
 
-    // ---- ROW 1 ----
     BSPE pe10 (.clk(clk),.rst(rst),.k(k[15:8]),   .q(d00),.pin(ps00),.psum(ps10),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f10), .fifo_read_out(),.data_out(d10));
     BSPE pe11 (.clk(clk),.rst(rst),.k(k[15:8]),   .q(d01),.pin(ps01),.psum(ps11),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f10), .left_read(),.right_inread(1'b1),.fifo_out_right(f11), .fifo_read_out(),.data_out(d11));
     BSPE pe12 (.clk(clk),.rst(rst),.k(k[15:8]),   .q(d02),.pin(ps02),.psum(ps12),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f11), .left_read(),.right_inread(1'b1),.fifo_out_right(f12), .fifo_read_out(),.data_out(d12));
@@ -190,7 +112,7 @@ module systolic_16x16_softmax (
     BSPE pe114(.clk(clk),.rst(rst),.k(k[15:8]),   .q(d014),.pin(ps014),.psum(ps114),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f113),.left_read(),.right_inread(1'b1),.fifo_out_right(f114),.fifo_read_out(),.data_out(d114));
     BSPE pe115(.clk(clk),.rst(rst),.k(k[15:8]),   .q(d015),.pin(ps015),.psum(ps115),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f114),.left_read(),.right_inread(1'b1),.fifo_out_right(f115),.fifo_read_out(),.data_out(d115));
 
-    // ---- ROW 2 ----
+    
     BSPE pe20 (.clk(clk),.rst(rst),.k(k[23:16]),  .q(d10),.pin(ps10),.psum(ps20),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f20), .fifo_read_out(),.data_out(d20));
     BSPE pe21 (.clk(clk),.rst(rst),.k(k[23:16]),  .q(d11),.pin(ps11),.psum(ps21),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f20), .left_read(),.right_inread(1'b1),.fifo_out_right(f21), .fifo_read_out(),.data_out(d21));
     BSPE pe22 (.clk(clk),.rst(rst),.k(k[23:16]),  .q(d12),.pin(ps12),.psum(ps22),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f21), .left_read(),.right_inread(1'b1),.fifo_out_right(f22), .fifo_read_out(),.data_out(d22));
@@ -208,7 +130,6 @@ module systolic_16x16_softmax (
     BSPE pe214(.clk(clk),.rst(rst),.k(k[23:16]),  .q(d114),.pin(ps114),.psum(ps214),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f213),.left_read(),.right_inread(1'b1),.fifo_out_right(f214),.fifo_read_out(),.data_out(d214));
     BSPE pe215(.clk(clk),.rst(rst),.k(k[23:16]),  .q(d115),.pin(ps115),.psum(ps215),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f214),.left_read(),.right_inread(1'b1),.fifo_out_right(f215),.fifo_read_out(),.data_out(d215));
 
-    // ---- ROW 3 ----
     BSPE pe30 (.clk(clk),.rst(rst),.k(k[31:24]),  .q(d20),.pin(ps20),.psum(ps30),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f30), .fifo_read_out(),.data_out(d30));
     BSPE pe31 (.clk(clk),.rst(rst),.k(k[31:24]),  .q(d21),.pin(ps21),.psum(ps31),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f30), .left_read(),.right_inread(1'b1),.fifo_out_right(f31), .fifo_read_out(),.data_out(d31));
     BSPE pe32 (.clk(clk),.rst(rst),.k(k[31:24]),  .q(d22),.pin(ps22),.psum(ps32),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f31), .left_read(),.right_inread(1'b1),.fifo_out_right(f32), .fifo_read_out(),.data_out(d32));
@@ -226,7 +147,7 @@ module systolic_16x16_softmax (
     BSPE pe314(.clk(clk),.rst(rst),.k(k[31:24]),  .q(d214),.pin(ps214),.psum(ps314),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f313),.left_read(),.right_inread(1'b1),.fifo_out_right(f314),.fifo_read_out(),.data_out(d314));
     BSPE pe315(.clk(clk),.rst(rst),.k(k[31:24]),  .q(d215),.pin(ps215),.psum(ps315),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f314),.left_read(),.right_inread(1'b1),.fifo_out_right(f315),.fifo_read_out(),.data_out(d315));
 
-    // ---- ROW 4 ----
+    
     BSPE pe40 (.clk(clk),.rst(rst),.k(k[39:32]),  .q(d30),.pin(ps30),.psum(ps40),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f40), .fifo_read_out(),.data_out(d40));
     BSPE pe41 (.clk(clk),.rst(rst),.k(k[39:32]),  .q(d31),.pin(ps31),.psum(ps41),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f40), .left_read(),.right_inread(1'b1),.fifo_out_right(f41), .fifo_read_out(),.data_out(d41));
     BSPE pe42 (.clk(clk),.rst(rst),.k(k[39:32]),  .q(d32),.pin(ps32),.psum(ps42),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f41), .left_read(),.right_inread(1'b1),.fifo_out_right(f42), .fifo_read_out(),.data_out(d42));
@@ -244,7 +165,6 @@ module systolic_16x16_softmax (
     BSPE pe414(.clk(clk),.rst(rst),.k(k[39:32]),  .q(d314),.pin(ps314),.psum(ps414),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f413),.left_read(),.right_inread(1'b1),.fifo_out_right(f414),.fifo_read_out(),.data_out(d414));
     BSPE pe415(.clk(clk),.rst(rst),.k(k[39:32]),  .q(d315),.pin(ps315),.psum(ps415),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f414),.left_read(),.right_inread(1'b1),.fifo_out_right(f415),.fifo_read_out(),.data_out(d415));
 
-    // ---- ROW 5 ----
     BSPE pe50 (.clk(clk),.rst(rst),.k(k[47:40]),  .q(d40),.pin(ps40),.psum(ps50),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f50), .fifo_read_out(),.data_out(d50));
     BSPE pe51 (.clk(clk),.rst(rst),.k(k[47:40]),  .q(d41),.pin(ps41),.psum(ps51),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f50), .left_read(),.right_inread(1'b1),.fifo_out_right(f51), .fifo_read_out(),.data_out(d51));
     BSPE pe52 (.clk(clk),.rst(rst),.k(k[47:40]),  .q(d42),.pin(ps42),.psum(ps52),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f51), .left_read(),.right_inread(1'b1),.fifo_out_right(f52), .fifo_read_out(),.data_out(d52));
@@ -262,7 +182,7 @@ module systolic_16x16_softmax (
     BSPE pe514(.clk(clk),.rst(rst),.k(k[47:40]),  .q(d414),.pin(ps414),.psum(ps514),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f513),.left_read(),.right_inread(1'b1),.fifo_out_right(f514),.fifo_read_out(),.data_out(d514));
     BSPE pe515(.clk(clk),.rst(rst),.k(k[47:40]),  .q(d415),.pin(ps415),.psum(ps515),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f514),.left_read(),.right_inread(1'b1),.fifo_out_right(f515),.fifo_read_out(),.data_out(d515));
 
-    // ---- ROW 6 ----
+    
     BSPE pe60 (.clk(clk),.rst(rst),.k(k[55:48]),  .q(d50),.pin(ps50),.psum(ps60),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f60), .fifo_read_out(),.data_out(d60));
     BSPE pe61 (.clk(clk),.rst(rst),.k(k[55:48]),  .q(d51),.pin(ps51),.psum(ps61),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f60), .left_read(),.right_inread(1'b1),.fifo_out_right(f61), .fifo_read_out(),.data_out(d61));
     BSPE pe62 (.clk(clk),.rst(rst),.k(k[55:48]),  .q(d52),.pin(ps52),.psum(ps62),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f61), .left_read(),.right_inread(1'b1),.fifo_out_right(f62), .fifo_read_out(),.data_out(d62));
@@ -280,7 +200,6 @@ module systolic_16x16_softmax (
     BSPE pe614(.clk(clk),.rst(rst),.k(k[55:48]),  .q(d514),.pin(ps514),.psum(ps614),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f613),.left_read(),.right_inread(1'b1),.fifo_out_right(f614),.fifo_read_out(),.data_out(d614));
     BSPE pe615(.clk(clk),.rst(rst),.k(k[55:48]),  .q(d515),.pin(ps515),.psum(ps615),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f614),.left_read(),.right_inread(1'b1),.fifo_out_right(f615),.fifo_read_out(),.data_out(d615));
 
-    // ---- ROW 7 ----
     BSPE pe70 (.clk(clk),.rst(rst),.k(k[63:56]),  .q(d60),.pin(ps60),.psum(ps70),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f70), .fifo_read_out(),.data_out(d70));
     BSPE pe71 (.clk(clk),.rst(rst),.k(k[63:56]),  .q(d61),.pin(ps61),.psum(ps71),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f70), .left_read(),.right_inread(1'b1),.fifo_out_right(f71), .fifo_read_out(),.data_out(d71));
     BSPE pe72 (.clk(clk),.rst(rst),.k(k[63:56]),  .q(d62),.pin(ps62),.psum(ps72),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f71), .left_read(),.right_inread(1'b1),.fifo_out_right(f72), .fifo_read_out(),.data_out(d72));
@@ -298,7 +217,7 @@ module systolic_16x16_softmax (
     BSPE pe714(.clk(clk),.rst(rst),.k(k[63:56]),  .q(d614),.pin(ps614),.psum(ps714),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f713),.left_read(),.right_inread(1'b1),.fifo_out_right(f714),.fifo_read_out(),.data_out(d714));
     BSPE pe715(.clk(clk),.rst(rst),.k(k[63:56]),  .q(d615),.pin(ps615),.psum(ps715),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f714),.left_read(),.right_inread(1'b1),.fifo_out_right(f715),.fifo_read_out(),.data_out(d715));
 
-    // ---- ROW 8 ----
+    
     BSPE pe80 (.clk(clk),.rst(rst),.k(k[71:64]),  .q(d70),.pin(ps70),.psum(ps80),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f80), .fifo_read_out(),.data_out(d80));
     BSPE pe81 (.clk(clk),.rst(rst),.k(k[71:64]),  .q(d71),.pin(ps71),.psum(ps81),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f80), .left_read(),.right_inread(1'b1),.fifo_out_right(f81), .fifo_read_out(),.data_out(d81));
     BSPE pe82 (.clk(clk),.rst(rst),.k(k[71:64]),  .q(d72),.pin(ps72),.psum(ps82),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f81), .left_read(),.right_inread(1'b1),.fifo_out_right(f82), .fifo_read_out(),.data_out(d82));
@@ -316,7 +235,6 @@ module systolic_16x16_softmax (
     BSPE pe814(.clk(clk),.rst(rst),.k(k[71:64]),  .q(d714),.pin(ps714),.psum(ps814),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f813),.left_read(),.right_inread(1'b1),.fifo_out_right(f814),.fifo_read_out(),.data_out(d814));
     BSPE pe815(.clk(clk),.rst(rst),.k(k[71:64]),  .q(d715),.pin(ps715),.psum(ps815),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f814),.left_read(),.right_inread(1'b1),.fifo_out_right(f815),.fifo_read_out(),.data_out(d815));
 
-    // ---- ROW 9 ----
     BSPE pe90 (.clk(clk),.rst(rst),.k(k[79:72]),  .q(d80),.pin(ps80),.psum(ps90),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(f90), .fifo_read_out(),.data_out(d90));
     BSPE pe91 (.clk(clk),.rst(rst),.k(k[79:72]),  .q(d81),.pin(ps81),.psum(ps91),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(f90), .left_read(),.right_inread(1'b1),.fifo_out_right(f91), .fifo_read_out(),.data_out(d91));
     BSPE pe92 (.clk(clk),.rst(rst),.k(k[79:72]),  .q(d82),.pin(ps82),.psum(ps92),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(f91), .left_read(),.right_inread(1'b1),.fifo_out_right(f92), .fifo_read_out(),.data_out(d92));
@@ -334,7 +252,7 @@ module systolic_16x16_softmax (
     BSPE pe914(.clk(clk),.rst(rst),.k(k[79:72]),  .q(d814),.pin(ps814),.psum(ps914),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(f913),.left_read(),.right_inread(1'b1),.fifo_out_right(f914),.fifo_read_out(),.data_out(d914));
     BSPE pe915(.clk(clk),.rst(rst),.k(k[79:72]),  .q(d815),.pin(ps815),.psum(ps915),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(f914),.left_read(),.right_inread(1'b1),.fifo_out_right(f915),.fifo_read_out(),.data_out(d915));
 
-    // ---- ROW 10 ----
+    
     BSPE pea0 (.clk(clk),.rst(rst),.k(k[87:80]),  .q(d90),.pin(ps90),.psum(psa0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(fa0), .fifo_read_out(),.data_out(da0));
     BSPE pea1 (.clk(clk),.rst(rst),.k(k[87:80]),  .q(d91),.pin(ps91),.psum(psa1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(fa0), .left_read(),.right_inread(1'b1),.fifo_out_right(fa1), .fifo_read_out(),.data_out(da1));
     BSPE pea2 (.clk(clk),.rst(rst),.k(k[87:80]),  .q(d92),.pin(ps92),.psum(psa2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(fa1), .left_read(),.right_inread(1'b1),.fifo_out_right(fa2), .fifo_read_out(),.data_out(da2));
@@ -352,7 +270,6 @@ module systolic_16x16_softmax (
     BSPE pea14(.clk(clk),.rst(rst),.k(k[87:80]),  .q(da4),.pin(psa4),.psum(psa14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(fa13),.left_read(),.right_inread(1'b1),.fifo_out_right(fa14),.fifo_read_out(),.data_out(da14));
     BSPE pea15(.clk(clk),.rst(rst),.k(k[87:80]),  .q(da5),.pin(psa5),.psum(psa15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(fa14),.left_read(),.right_inread(1'b1),.fifo_out_right(fa15),.fifo_read_out(),.data_out(da15));
 
-    // ---- ROW 11 ----
     BSPE peb0 (.clk(clk),.rst(rst),.k(k[95:88]),  .q(da0),.pin(psa0),.psum(psb0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(fb0), .fifo_read_out(),.data_out(db0));
     BSPE peb1 (.clk(clk),.rst(rst),.k(k[95:88]),  .q(da1),.pin(psa1),.psum(psb1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(fb0), .left_read(),.right_inread(1'b1),.fifo_out_right(fb1), .fifo_read_out(),.data_out(db1));
     BSPE peb2 (.clk(clk),.rst(rst),.k(k[95:88]),  .q(da2),.pin(psa2),.psum(psb2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(fb1), .left_read(),.right_inread(1'b1),.fifo_out_right(fb2), .fifo_read_out(),.data_out(db2));
@@ -370,7 +287,7 @@ module systolic_16x16_softmax (
     BSPE peb14(.clk(clk),.rst(rst),.k(k[95:88]),  .q(da14),.pin(psa14),.psum(psb14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(fb13),.left_read(),.right_inread(1'b1),.fifo_out_right(fb14),.fifo_read_out(),.data_out(db14));
     BSPE peb15(.clk(clk),.rst(rst),.k(k[95:88]),  .q(da15),.pin(psa15),.psum(psb15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(fb14),.left_read(),.right_inread(1'b1),.fifo_out_right(fb15),.fifo_read_out(),.data_out(db15));
 
-    // ---- ROW 12 ----
+    
     BSPE pec0 (.clk(clk),.rst(rst),.k(k[103:96]), .q(db0),.pin(psb0),.psum(psc0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(fc0), .fifo_read_out(),.data_out(dc0));
     BSPE pec1 (.clk(clk),.rst(rst),.k(k[103:96]), .q(db1),.pin(psb1),.psum(psc1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(fc0), .left_read(),.right_inread(1'b1),.fifo_out_right(fc1), .fifo_read_out(),.data_out(dc1));
     BSPE pec2 (.clk(clk),.rst(rst),.k(k[103:96]), .q(db2),.pin(psb2),.psum(psc2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(fc1), .left_read(),.right_inread(1'b1),.fifo_out_right(fc2), .fifo_read_out(),.data_out(dc2));
@@ -388,7 +305,6 @@ module systolic_16x16_softmax (
     BSPE pec14(.clk(clk),.rst(rst),.k(k[103:96]), .q(db14),.pin(psb14),.psum(psc14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(fc13),.left_read(),.right_inread(1'b1),.fifo_out_right(fc14),.fifo_read_out(),.data_out(dc14));
     BSPE pec15(.clk(clk),.rst(rst),.k(k[103:96]), .q(db15),.pin(psb15),.psum(psc15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(fc14),.left_read(),.right_inread(1'b1),.fifo_out_right(fc15),.fifo_read_out(),.data_out(dc15));
 
-    // ---- ROW 13 ----
     BSPE ped0 (.clk(clk),.rst(rst),.k(k[111:104]),.q(dc0),.pin(psc0),.psum(psd0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(fd0), .fifo_read_out(),.data_out(dd0));
     BSPE ped1 (.clk(clk),.rst(rst),.k(k[111:104]),.q(dc1),.pin(psc1),.psum(psd1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(fd0), .left_read(),.right_inread(1'b1),.fifo_out_right(fd1), .fifo_read_out(),.data_out(dd1));
     BSPE ped2 (.clk(clk),.rst(rst),.k(k[111:104]),.q(dc2),.pin(psc2),.psum(psd2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(fd1), .left_read(),.right_inread(1'b1),.fifo_out_right(fd2), .fifo_read_out(),.data_out(dd2));
@@ -406,7 +322,7 @@ module systolic_16x16_softmax (
     BSPE ped14(.clk(clk),.rst(rst),.k(k[111:104]),.q(dc14),.pin(psc14),.psum(psd14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(fd13),.left_read(),.right_inread(1'b1),.fifo_out_right(fd14),.fifo_read_out(),.data_out(dd14));
     BSPE ped15(.clk(clk),.rst(rst),.k(k[111:104]),.q(dc15),.pin(psc15),.psum(psd15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(fd14),.left_read(),.right_inread(1'b1),.fifo_out_right(fd15),.fifo_read_out(),.data_out(dd15));
 
-    // ---- ROW 14 ----
+    
     BSPE pee0 (.clk(clk),.rst(rst),.k(k[119:112]),.q(dd0),.pin(psd0),.psum(pse0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(fe0), .fifo_read_out(),.data_out(de0));
     BSPE pee1 (.clk(clk),.rst(rst),.k(k[119:112]),.q(dd1),.pin(psd1),.psum(pse1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(fe0), .left_read(),.right_inread(1'b1),.fifo_out_right(fe1), .fifo_read_out(),.data_out(de1));
     BSPE pee2 (.clk(clk),.rst(rst),.k(k[119:112]),.q(dd2),.pin(psd2),.psum(pse2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(fe1), .left_read(),.right_inread(1'b1),.fifo_out_right(fe2), .fifo_read_out(),.data_out(de2));
@@ -424,7 +340,6 @@ module systolic_16x16_softmax (
     BSPE pee14(.clk(clk),.rst(rst),.k(k[119:112]),.q(dd14),.pin(psd14),.psum(pse14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(fe13),.left_read(),.right_inread(1'b1),.fifo_out_right(fe14),.fifo_read_out(),.data_out(de14));
     BSPE pee15(.clk(clk),.rst(rst),.k(k[119:112]),.q(dd15),.pin(psd15),.psum(pse15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(fe14),.left_read(),.right_inread(1'b1),.fifo_out_right(fe15),.fifo_read_out(),.data_out(de15));
 
-    // ---- ROW 15 (final row, data_out unused) ----
     BSPE pef0 (.clk(clk),.rst(rst),.k(k[127:120]),.q(de0),.pin(pse0),.psum(psf0),.valid_q(valid_q),.load_k(load_kc1), .left_valid(1'b1),.left_fifo_out(8'd0),.left_read(),.right_inread(1'b1),.fifo_out_right(ff0), .fifo_read_out(),.data_out());
     BSPE pef1 (.clk(clk),.rst(rst),.k(k[127:120]),.q(de1),.pin(pse1),.psum(psf1),.valid_q(valid_q),.load_k(load_kc2), .left_valid(1'b1),.left_fifo_out(ff0), .left_read(),.right_inread(1'b1),.fifo_out_right(ff1), .fifo_read_out(),.data_out());
     BSPE pef2 (.clk(clk),.rst(rst),.k(k[127:120]),.q(de2),.pin(pse2),.psum(psf2),.valid_q(valid_q),.load_k(load_kc3), .left_valid(1'b1),.left_fifo_out(ff1), .left_read(),.right_inread(1'b1),.fifo_out_right(ff2), .fifo_read_out(),.data_out());
@@ -442,11 +357,11 @@ module systolic_16x16_softmax (
     BSPE pef14(.clk(clk),.rst(rst),.k(k[127:120]),.q(de14),.pin(pse14),.psum(psf14),.valid_q(valid_q),.load_k(load_kc15),.left_valid(1'b1),.left_fifo_out(ff13),.left_read(),.right_inread(1'b1),.fifo_out_right(ff14),.fifo_read_out(),.data_out());
     BSPE pef15(.clk(clk),.rst(rst),.k(k[127:120]),.q(de15),.pin(pse15),.psum(psf15),.valid_q(valid_q),.load_k(load_kc16),.left_valid(1'b1),.left_fifo_out(ff14),.left_read(),.right_inread(1'b1),.fifo_out_right(ff15),.fifo_read_out(),.data_out());
 
-    // =========================================================================
-    // ROW-END LOGITS
-    // Each f[row][15] is the fully accumulated dot-product for that row.
-    // These are the signed INT8 logits (Q1.7) that feed expcalc_v2.
-    // =========================================================================
+    
+    
+    
+    
+    
     wire [7:0] logit [0:15];
     assign logit[0]  = f015;
     assign logit[1]  = f115;
@@ -465,11 +380,11 @@ module systolic_16x16_softmax (
     assign logit[14] = fe15;
     assign logit[15] = ff15;
 
-    // =========================================================================
-    // PER-ROW expcalc_v2  (16 instances)
-    // Each computes e^(logit[r]) in Q1.7 unsigned -- these values feed BOTH
-    // the debug e_row port AND the softmax_from_exp_16 unit (no recomputation).
-    // =========================================================================
+    
+    
+    
+    
+    
     wire [7:0]   exp_val [0:15];
     wire [127:0] exp_packed;
 
@@ -484,13 +399,13 @@ module systolic_16x16_softmax (
         end
     endgenerate
 
-    // =========================================================================
-    // softmax_from_exp_16 (1 instance, combinational)
-    // Consumes the 16 pre-computed exp values.  Produces:
-    //   sm_c  = normal softmax e[i]/sum        (PRIMARY -- MHSA weights V with this)
-    //   lsm_c = log-softmax = log e[i] - log sum (debug / alt analysis)
-    //   es_c  = sum of exp (debug)
-    // =========================================================================
+    
+    
+    
+    
+    
+    
+    
     wire [127:0] sm_c;
     wire [127:0] lsm_c;
     wire [11:0]  es_c;
@@ -502,9 +417,9 @@ module systolic_16x16_softmax (
         .es_sum  (es_c)
     );
 
-    // =========================================================================
-    // Output registers (1 cycle latency on softmax outputs)
-    // =========================================================================
+    
+    
+    
     always @(posedge clk) begin
         if (rst) begin
             sm_out    <= 128'd0;
@@ -517,7 +432,7 @@ module systolic_16x16_softmax (
             lsm_out   <= lsm_c;
             e_row     <= exp_packed;
             es_sum    <= es_c;
-            exp_valid <= valid_q;   // simple 1-cycle registered valid
+            exp_valid <= valid_q;   
         end
     end
 

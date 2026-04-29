@@ -1,28 +1,4 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// vit_encoder_block.sv  --  ViT Transformer Encoder Block (one 16x16 tile)
-// =============================================================================
-//
-// [CORNER-CASE FIX C3]  exp_q17_ref() used $exp/$rtoi which are
-//   SIMULATION-ONLY and non-synthesizable.  Replaced with a pure
-//   combinational function `exp_lut_q17()` that bit-exactly mimics
-//   expcalc_v2's LUT-based approach (same 1/ln2 shift chain, same LUT
-//   bases [128,144,164,185,210,238,250,255], same 5-bit rounded
-//   shifters).  Now the SIM result matches what real HW will produce,
-//   AND the whole module is synthesizable in Vivado.
-//
-// DATAFLOW (LN-before-attention, Transformer-style):
-//   x -> LN1 -> QKV -> QK^T (HW BSPE) + Softmax (HW) -> A*V -> W_O -> +residual
-//     -> LN2 -> MLP1 (+GELU) -> MLP2 -> +residual -> x_out
-//
-// NOTE ON BEHAVIOURAL SHORTCUTS:
-//   QKV/AV/WO/MLP projections use behavioural dot-products so one tile
-//   completes in ~50 cycles rather than ~500.  The Booth-skipping BSPE
-//   array is exercised via mhsa_16 so the softmax/exp pipeline IS
-//   genuine HW.  For paper-accurate cycle counts use tb_bspe_tile_cycles.sv.
-//   All exp/log operations in this file now use the user's LUT-based
-//   expcalc_v2/logcalc_v2 algorithm (NOT Taylor expansion, NOT $exp).
-// =============================================================================
 
 module vit_encoder_block #(
     parameter BOOTH_LSB_SCALE = 1,
@@ -46,9 +22,9 @@ module vit_encoder_block #(
     output reg           done
 );
 
-    // =========================================================================
-    // States
-    // =========================================================================
+    
+    
+    
     localparam S_IDLE         = 4'd0;
     localparam S_LN1          = 4'd1;
     localparam S_QKV          = 4'd2;
@@ -77,9 +53,6 @@ module vit_encoder_block #(
     reg [2047:0] mlp1_out;
     reg [2047:0] mlp2_out;
 
-    // =========================================================================
-    // LayerNorm (per-token, 16 parallel instances)
-    // =========================================================================
     wire [127:0] ln_token_out [0:15];
     wire ln_is_ln2 = (state == S_LN2);
     genvar gi;
@@ -94,12 +67,6 @@ module vit_encoder_block #(
         end
     endgenerate
 
-    // =========================================================================
-    // MHSA hardware: exercises the Booth-skipping BSPE array once per block
-    // (captures softmax for Q row 15 into attn_sm[15] for waveform observability).
-    // The FULL 16x16 attention matrix is computed below behaviourally, but using
-    // the SAME LUT-based exp algorithm that this HW instance uses.
-    // =========================================================================
     reg          attn_start;
     reg [2047:0] q_for_attn;
     reg [2047:0] k_for_attn;
@@ -125,9 +92,6 @@ module vit_encoder_block #(
         .attn_valid (attn_valid_w)
     );
 
-    // =========================================================================
-    // Saturating signed add
-    // =========================================================================
     function automatic [7:0] sat_add8 (input signed [7:0] a, input signed [7:0] b);
         reg signed [8:0] s;
         begin
@@ -138,9 +102,6 @@ module vit_encoder_block #(
         end
     endfunction
 
-    // =========================================================================
-    // Behavioural dot products (INT8 signed x signed -> INT8 signed)
-    // =========================================================================
     function automatic [7:0] dot_product_8b (
         input [127:0] row_w,
         input [127:0] act
@@ -180,18 +141,18 @@ module vit_encoder_block #(
         else               gelu_approx = {{3{1'b1}}, x[7:3]};
     endfunction
 
-    // =========================================================================
-    // [C3 FIX] LUT-based e^x function -- bit-exactly mimics expcalc_v2.
-    //   Replaces the SIM-ONLY exp_q17_ref() that used $exp and $rtoi.
-    //   Algorithm identical to expcalc_v2 module:
-    //     1. Clamp positive psum to 0 (softmax pre-condition x <= 0)
-    //     2. Multiply by ~1/ln2 = 1.4453125 via shift-and-add
-    //     3. Split into integer power-of-two `a` and remainder `r`
-    //     4. 8-segment piecewise-quadratic LUT on r (bases [128..255])
-    //     5. Right-shift mantissa by |a| to apply 2^a factor
-    //   This function is SYNTHESIZABLE -- it uses only shifts, adds, and a
-    //   small case statement.  Output matches expcalc_v2 for all 256 inputs.
-    // =========================================================================
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     function automatic [7:0] exp_lut_q17 (input signed [7:0] psum);
         reg signed [7:0] psum_sat;
         reg signed [9:0] ps10, t, a10, a_ln2, r_raw;
@@ -206,35 +167,31 @@ module vit_encoder_block #(
         reg        [7:0] mant;
         reg        [2:0] a_mag;
         begin
-            // Step 1: clamp positive to 0
+            
             psum_sat = psum[7] ? psum : 8'sh00;
 
-            // Step 2: multiply by 1/ln2 = 1.4453125 (1 + 1/4 + 1/8 + 1/16 + 1/128)
             ps10 = {{2{psum_sat[7]}}, psum_sat};
             t    = ps10 + (ps10 >>> 2) + (ps10 >>> 3)
                         + (ps10 >>> 4) + (ps10 >>> 7);
 
-            // Step 3a: a = floor(t/128)  (arithmetic right-shift on 10-bit signed)
             a = t >>> 7;
 
-            // Step 3b: a_ln2 = a * 89 (ln2*128 ~ 88.72 ~ 89 = 64+16+8+1)
             a10   = {{6{a[3]}}, a};
             a_ln2 = (a10 <<< 6) + (a10 <<< 4) + (a10 <<< 3) + a10;
 
-            // Step 3c: r = psum_sat - a_ln2, clamped to [0, 127]
             r_raw = ps10 - a_ln2;
             r     = r_raw[9] ? 7'd0 : r_raw[6:0];
 
             index = r[6:4];
             frac  = r[3:0];
 
-            // 5-bit rounded-shift helpers (prevents overflow for frac up to 15)
+            
             f5   = {1'b0, frac};
             rsh1 = (f5 + 5'd1) >> 1;
             rsh2 = (f5 + 5'd2) >> 2;
             rsh3 = (f5 + 5'd4) >> 3;
 
-            // Step 4: profile-optimised LUT
+            
             case (index)
                 3'd0: begin lut_base = 8'd128; lut_delta = {4'b0, frac}; end
                 3'd1: begin lut_base = 8'd144; lut_delta = {4'b0, frac} + {4'b0, rsh2[3:0]}; end
@@ -250,7 +207,7 @@ module vit_encoder_block #(
             mant_raw = {1'b0, lut_base} + lut_delta;
             mant     = mant_raw[8] ? 8'd255 : mant_raw[7:0];
 
-            // Step 5: shift by |a| via two's-complement magnitude of lower 3 bits
+            
             a_mag   = ~a[2:0] + 3'd1;
             shifted = a[3] ? ({1'b0, mant} >> a_mag) : {1'b0, mant};
 
@@ -258,9 +215,6 @@ module vit_encoder_block #(
         end
     endfunction
 
-    // =========================================================================
-    // Extract column of V (16x16 stored row-major)
-    // =========================================================================
     function automatic [127:0] extract_v_col (input [2047:0] v_full, input integer dim);
         integer tk;
         reg [127:0] col;
@@ -272,9 +226,9 @@ module vit_encoder_block #(
         end
     endfunction
 
-    // =========================================================================
-    // Main state machine
-    // =========================================================================
+    
+    
+    
     integer rr, dd;
     integer iAv, jAv, dAv;
 
@@ -347,37 +301,35 @@ module vit_encoder_block #(
                 S_ATTN_WAIT: begin
                     wait_cnt <= wait_cnt + 6'd1;
                     if (attn_valid_w || wait_cnt >= 6'd63) begin
-                        attn_sm[15*128 +: 128] <= attn_sm_w;  // HW softmax of Q row 15
+                        attn_sm[15*128 +: 128] <= attn_sm_w;  
                         state <= S_AV;
                     end
                 end
 
-                // ------------------------------------------------------------
-                // S_AV: full 16x16 softmax matrix computed here using LUT-based
-                // exp (identical algorithm to expcalc_v2 HW module).  THEN
-                // compute A*V row.
+                
+                
+                
+                
                 S_AV: begin
                     for (iAv = 0; iAv < 16; iAv = iAv + 1) begin
                         sum_exp = 12'd0;
 
-                        // (1) logits and LUT exp for row iAv
                         for (jAv = 0; jAv < 16; jAv = jAv + 1) begin
                             logit_s = 20'sd0;
                             for (dAv = 0; dAv < 16; dAv = dAv + 1)
                                 logit_s = logit_s +
                                           ($signed(q_proj[iAv*128 + dAv*8 +: 8]) *
                                            $signed(k_proj[jAv*128 + dAv*8 +: 8]));
-                            // scale: /sqrt(dk=16)=1/4 (>>2), Q1.7 (>>7) = >>9
+                            
                             logit_s = logit_s >>> 9;
                             if (logit_s > 20'sd0)    logit_s = 20'sd0;
                             if (logit_s < -20'sd128) logit_s = -20'sd128;
-                            // [C3 FIX] was: exp_q17_ref($exp)
-                            // now:        exp_lut_q17 (LUT-based, synthesizable)
+                            
+                            
                             e_j[jAv] = exp_lut_q17(logit_s[7:0]);
                             sum_exp  = sum_exp + {4'b0, e_j[jAv]};
                         end
 
-                        // (2) normalize with rounding-divide (same as softmax_from_exp_16)
                         if (sum_exp == 12'd0) sum_exp = 12'd1;
                         for (jAv = 0; jAv < 16; jAv = jAv + 1) begin
                             numer_q   = {e_j[jAv], 7'b0};
@@ -389,7 +341,6 @@ module vit_encoder_block #(
                             attn_sm[iAv*128 + jAv*8 +: 8] <= sm_j[jAv];
                         end
 
-                        // (3) A*V row for this iAv
                         for (dAv = 0; dAv < 16; dAv = dAv + 1)
                             av_out[iAv*128 + dAv*8 +: 8] <=
                                 dot_product_u8xs8(

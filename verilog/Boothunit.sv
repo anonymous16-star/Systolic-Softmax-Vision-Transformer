@@ -1,17 +1,4 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// boothunit  --  single Radix-4 Booth pipeline stage
-//
-// CORNER-CASE FIX [C2] (vs original):
-//   - Changed `always @(posedge clk or posedge rst)` (ASYNC reset) to
-//     `always @(posedge clk)` with synchronous `if (rst)` pattern.
-//     Every other module in this design uses sync reset, so the async
-//     reset here created mixed-reset synthesis warnings and could cause
-//     timing issues at the reset-domain boundary.  Sync reset is also
-//     preferred for Vivado/ASIC flows.
-//   - LOGIC UNCHANGED: same skip detection, same stage pipelining, same
-//     dout/booth_out_8b/done outputs.
-// =============================================================================
 
 module boothunit (
     input               clk,
@@ -51,7 +38,6 @@ module boothunit (
 
     assign skip = (boothcode == 3'b000 || boothcode == 3'b111);
 
-    // [FIX C2] Synchronous reset, consistent with rest of design
     always @(posedge clk) begin
         if (rst) begin
             stage1       <= 8'sd0;
@@ -70,7 +56,7 @@ module boothunit (
             end
 
             if (stage1_valid) begin
-                stage2 <= stage1 + boothmulOut;   // truncation preserved
+                stage2 <= stage1 + boothmulOut;  
                 q_reg  <= q_reg1;
             end
         end

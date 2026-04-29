@@ -1,49 +1,18 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// linear_proj.sv  --  16x16 Linear Projection using BSPE systolic array
-//
-// PURPOSE:
-//   Performs Y = X * W for 16-wide activations and 16-wide weight rows.
-//   Used for Q, K, V projections and MLP layers in the ViT encoder.
-//   This is the SAME BSPE array as used for attention, demonstrating BoostViT's
-//   key property: the BSPE array is reused for ALL linear operations.
-//
-// ARCHITECTURE:
-//   - Reuses systolic_16x16_softmax hardware MINUS the softmax unit.
-//   - K-stationary: weights W[row] loaded once per new projection matrix.
-//   - Activations X[col] streamed in via x_in[col], valid_x strobe.
-//   - Output: 16 accumulated dot-products y[row] = sum_col(W[row] * X[col]).
-//   - Output valid: out_valid, one cycle after FIFO drains.
-//
-// DATA WIDTHS:
-//   All INT8 signed. Output y[row] is INT8 saturated (wraps in 8-bit).
-//
-// CONNECTION TO PAPER:
-//   Section V-B: "For the Q/K/V generation and MLP layers, since the weights
-//   in these other linear mapping layers can also be Booth-encoded to produce
-//   significant Booth-skip rates, BoostViT can also enjoy an end-to-end
-//   speed up via reusing the BSPE Array."
-// =============================================================================
 
 module linear_proj (
     input  wire        clk,
     input  wire        rst,
-
-    // Weight loading (same as systolic array)
     input  wire load_wc1,  load_wc2,  load_wc3,  load_wc4,
     input  wire load_wc5,  load_wc6,  load_wc7,  load_wc8,
     input  wire load_wc9,  load_wc10, load_wc11, load_wc12,
     input  wire load_wc13, load_wc14, load_wc15, load_wc16,
-    input  wire [127:0] w,         // packed weights: w[row*8+:8] for row r
-
-    // Activation inputs
+    input  wire [127:0] w,         
     input  wire [7:0]  x0,  x1,  x2,  x3,
     input  wire [7:0]  x4,  x5,  x6,  x7,
     input  wire [7:0]  x8,  x9,  x10, x11,
     input  wire [7:0]  x12, x13, x14, x15,
     input  wire        valid_x,
-
-    // Outputs: 16 row dot-products (signed INT8)
     output reg  [7:0]  y0,  y1,  y2,  y3,
     output reg  [7:0]  y4,  y5,  y6,  y7,
     output reg  [7:0]  y8,  y9,  y10, y11,
@@ -51,9 +20,6 @@ module linear_proj (
     output reg         out_valid
 );
 
-    // =========================================================================
-    // Instantiate the systolic array (raw outputs, no softmax)
-    // =========================================================================
     wire [7:0] e1, e2, e3, e4, e5, e6, e7, e8;
     wire [7:0] e9, e10, e11, e12, e13, e14, e15, e16;
 
@@ -79,12 +45,6 @@ module linear_proj (
         .e9(e9),   .e10(e10), .e11(e11), .e12(e12),
         .e13(e13), .e14(e14), .e15(e15), .e16(e16)
     );
-
-    // =========================================================================
-    // Register outputs with valid signal
-    // valid_q pipelined: BSPE worst-case = ~10 cycles
-    // We use a simple 12-cycle shift register for valid tracking
-    // =========================================================================
     reg [11:0] valid_sr;
     always @(posedge clk) begin
         if (rst) valid_sr <= 12'd0;

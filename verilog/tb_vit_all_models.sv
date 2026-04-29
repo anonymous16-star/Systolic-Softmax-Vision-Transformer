@@ -1,28 +1,12 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_vit_all_models.sv  --  unified testbench running ALL DeiT configurations
-// =============================================================================
-//
-// CORNER-CASE FIX [H2] vs original:
-//   Original stimulus produced degenerate x_out = x_in + 19 uniform offset
-//   (pipeline collapse).  New stimulus:
-//     - Distinct per-token embedding patterns so LN actually normalises
-//     - Structured weight matrices with non-trivial row-to-row variation
-//     - LN gamma/beta tuned so normalised values span a usable range
-//   Result: x_out has real token-to-token variation, demonstrating the
-//   ViT pipeline end-to-end.
-//
-// WHAT IT MEASURES:
-//   - Per-config cycle count for a single 16x16 encoder-block tile
-//   - Extrapolated full-model cycle count (via vit_top's TILES_PER_MODEL)
-//   - Output-integrity sanity (no X's in any of 4 configs)
-// =============================================================================
+
+
 
 module tb_vit_all_models;
 
     reg clk, rst;
     initial clk = 0;
-    always #5 clk = ~clk;                  // 100 MHz
+    always #5 clk = ~clk;                  
 
     reg  [2047:0] x_in;
     reg  [2047:0] wq_flat, wk_flat, wv_flat, wo_flat, wmlp1_flat, wmlp2_flat;
@@ -90,41 +74,29 @@ module tb_vit_all_models;
         rst = 0;
         @(posedge clk);
 
-        // --------------------------------------------------------------------
-        // [H2 FIX] Structured per-token stimulus that survives the pipeline:
-        //   - Token i, dim j:  value depends on BOTH i and j in a way that
-        //     LN normalises differently per token (per-token variance varies),
-        //     so attention scores are non-uniform.
-        //   - Weight matrices: small but with non-trivial row-to-row variation
-        //     using row-index and dim-index structure; mostly in [-4, 5].
-        // --------------------------------------------------------------------
+        
         for (i = 0; i < 16; i = i + 1) begin
             for (j = 0; j < 16; j = j + 1) begin
-                // token-specific scale + dim-specific base
+                
                 x_in[i*128 + j*8 +: 8] =
                     8'( ((((i*5) + 1) * ((j*3) + 1)) % 41) - 20 );
             end
         end
 
-        // Weights: structured, small, with inter-row variation
         for (i = 0; i < 256; i = i + 1) begin
-            wq_flat   [i*8 +: 8] = 8'( ((i*7)  % 9)  - 4 );    // [-4, 4]
+            wq_flat   [i*8 +: 8] = 8'( ((i*7)  % 9)  - 4 );    
             wk_flat   [i*8 +: 8] = 8'( ((i*11) % 9)  - 4 );
-            wv_flat   [i*8 +: 8] = 8'( ((i*13) % 11) - 5 );    // [-5, 5]
+            wv_flat   [i*8 +: 8] = 8'( ((i*13) % 11) - 5 );    
             wo_flat   [i*8 +: 8] = 8'( ((i*17) % 7)  - 3 );
             wmlp1_flat[i*8 +: 8] = 8'( ((i*19) % 9)  - 4 );
             wmlp2_flat[i*8 +: 8] = 8'( ((i*23) % 7)  - 3 );
         end
 
-        // LN params: gamma=128 (1.0 in Q1.7), beta=0
         for (i = 0; i < 16; i = i + 1) begin
             gamma1[i*8 +: 8] = 8'd128;  beta1[i*8 +: 8] = 8'd0;
             gamma2[i*8 +: 8] = 8'd128;  beta2[i*8 +: 8] = 8'd0;
         end
 
-        // --------------------------------------------------------------------
-        // Fire all four DUTs simultaneously
-        // --------------------------------------------------------------------
         $display("");
         $display("  Launching all 4 configurations in parallel...");
         @(negedge clk); start = 1'b1;
@@ -137,9 +109,6 @@ module tb_vit_all_models;
         end
         repeat(2) @(posedge clk);
 
-        // --------------------------------------------------------------------
-        // Sanity: no undefined outputs
-        // --------------------------------------------------------------------
         out_x_toy = 0;  out_x_tiny = 0;  out_x_small = 0;  out_x_base = 0;
         for (i = 0; i < 256; i = i + 1) begin
             if (x_out_toy  [i*8 +: 8] === 8'bxxxxxxxx) out_x_toy   = out_x_toy   + 1;
@@ -202,7 +171,6 @@ module tb_vit_all_models;
         $finish;
     end
 
-    // Safety watchdog
     initial begin
         #100000;
         $display("  [WATCHDOG] exceeded 100us, terminating");

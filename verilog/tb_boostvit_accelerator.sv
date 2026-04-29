@@ -1,18 +1,5 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_boostvit_accelerator.sv  --  v2 end-to-end smoke test
-//
-// Exercises:
-//   - Outer-loop controller firing multiple tiles
-//   - Inner 32-state FSM with real residual wiring (RES1, RES2)
-//   - Full 16-token LN batch (LN1_LOAD + LN1_STORE)
-//   - SM Unit observability via host readback (addr 0xF0..0xF3)
-//   - Wide accumulator bank observability (addr 0xF40)
-//   - Head-concat unit observability (addr 0xF6, 0xF7)
-//   - AXI burst status (addr 0xFA)
-//   - Full 32-state cycle-trace
-//   - Cycle extrapolation for DeiT-Tiny / Small / Base
-// =============================================================================
+
 
 module tb_boostvit_accelerator;
     localparam integer H_HEADS = 3;
@@ -41,7 +28,7 @@ module tb_boostvit_accelerator;
     wire         all_done;
     wire [31:0]  total_tiles_fired;
 
-    // DRAM stub -- respond to mem_req with mem_ack + dummy data
+    
     wire         mem_req, mem_we;
     wire [31:0]  mem_addr;
     wire [127:0] mem_wdata;
@@ -53,7 +40,7 @@ module tb_boostvit_accelerator;
             mem_ack   <= 0;
             mem_rdata <= 0;
         end else begin
-            mem_ack   <= mem_req;  // 1-cycle latency
+            mem_ack   <= mem_req;  
             mem_rdata <= {mem_addr, mem_addr, mem_addr, mem_addr};
         end
     end
@@ -128,14 +115,14 @@ module tb_boostvit_accelerator;
             dktile  = (dk + 15) / 16;
             mlptile = (4*D + 15) / 16;
 
-            cyc_block = 2*ntile                                    // LN
-                      + 3 * ntile * dtile * 44                     // QKV
-                      + H * ntile * ntile * dktile * 44            // QK^T
-                      + H * ntile * ntile * dktile * 44            // AV
-                      + ntile * dtile * 44                          // WO
-                      + ntile * mlptile * 44                        // MLP1
-                      + ntile * dtile * 44                          // MLP2
-                      + 2*ntile;                                    // Res
+            cyc_block = 2*ntile                                    
+                      + 3 * ntile * dtile * 44                     
+                      + H * ntile * ntile * dktile * 44            
+                      + H * ntile * ntile * dktile * 44            
+                      + ntile * dtile * 44                          
+                      + ntile * mlptile * 44                        
+                      + ntile * dtile * 44                          
+                      + 2*ntile;                                    
             cyc_model = cyc_block * 12;
             if (N == 16 && D == 16) cyc_block = toy_total;
 
@@ -163,7 +150,6 @@ module tb_boostvit_accelerator;
     always @(posedge clk) begin
         if (rst_n && DUT.lp_out_valid)
             lp_valid_cnt_per_state[state_dbg] <= lp_valid_cnt_per_state[state_dbg] + 1;
-        // Debug: show lp_y_packed value at each valid strobe in WO_CAPTURE
         if (rst_n && DUT.lp_out_valid && state_dbg == 5'd19 && trace_en)
             $display("  [cyc %4d] lp_out_valid=1 lp_y_packed=%h",
                      cyc, DUT.lp_y_packed);
@@ -202,8 +188,8 @@ module tb_boostvit_accelerator;
         host_act_we = 0; host_act_addr = 0; host_act_din = 0;
         host_wgt_we = 0; host_wgt_addr = 0; host_wgt_din = 0;
         host_out_addr = 0;
-        cfg_n_tiles = 5'd0; cfg_d_tiles = 5'd0;     // 1 N-tile, 1 D-tile
-        cfg_h_heads = 4'd0; cfg_l_layers = 4'd0;    // 1 head, 1 layer
+        cfg_n_tiles = 5'd0; cfg_d_tiles = 5'd0;     
+        cfg_h_heads = 4'd0; cfg_l_layers = 4'd0;    
         repeat(10) @(posedge clk);
         rst_n = 1;
         repeat(5) @(posedge clk);

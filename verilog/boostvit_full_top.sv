@@ -1,13 +1,6 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// boostvit_full_top.sv  --  Mid-tier synthesis top (attention + LN + GELU)
-//
-// Three-tier synthesis hierarchy:
-//   boostvit_top         = attention core only (~44k LUT)
-//   boostvit_full_top    = attention + LN + GELU + output reg  (~50k LUT)
-//   boostvit_accelerator = FULL paper Fig. 6 (controller + buffers + all
-//                          compute engines)  (~100-150k LUT expected)
-// =============================================================================
+
+
 
 module boostvit_full_top #(
     parameter BOOTH_LSB_SCALE = 1,

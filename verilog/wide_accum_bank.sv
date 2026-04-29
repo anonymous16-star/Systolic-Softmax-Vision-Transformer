@@ -1,25 +1,8 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// wide_accum_bank.sv  --  16 x 24-bit accumulator bank
-//
-// Paper reports 16-20 bit partial sums inside the BSPE datapath.  Our BSPE
-// preserves your original 8-bit path.  To match the paper's precision
-// on inter-tile accumulation (K-axis reduction for multi-tile matmul),
-// this block sits on the BSPE output and maintains 24-bit accumulators
-// across multiple K-tiles of the same (row, col) output.
-//
-// Behavior:
-//   - On `clear_accum`: accumulator <- 0
-//   - On `valid_in`:    accumulator <- accumulator + sign-extend(y_in_8b)
-//   - On `latch_out`:   y_out_8b <- saturate(accumulator >>> shift)
-//
-// This is synthesized as 16 parallel 24-bit adders + registers + sat logic,
-// and contributes ~8-12 k LUTs on ZCU102.
-//
-// =============================================================================
+
 
 module wide_accum_bank #(
-    parameter ACC_WIDTH = 24,          // Accumulator width in bits
+    parameter ACC_WIDTH = 24,          
     parameter N_LANES   = 16
 )(
     input  wire                    clk,
@@ -27,18 +10,18 @@ module wide_accum_bank #(
 
     input  wire                    clear_accum,
     input  wire                    valid_in,
-    input  wire [N_LANES*8-1:0]    y_in_packed,      // 16 x signed INT8
-    input  wire [4:0]              shift,            // output right-shift amount
+    input  wire [N_LANES*8-1:0]    y_in_packed,      
+    input  wire [4:0]              shift,            
     input  wire                    latch_out,
 
-    output reg  [N_LANES*8-1:0]    y_out_packed,     // 16 x signed INT8 saturated
+    output reg  [N_LANES*8-1:0]    y_out_packed,     
     output reg                     y_out_valid,
 
-    // Debug / observability
+    
     output wire [ACC_WIDTH*N_LANES-1:0] acc_dbg
 );
 
-    // 16 parallel accumulators
+    
     reg  signed [ACC_WIDTH-1:0] acc [0:N_LANES-1];
 
     genvar li;
@@ -56,7 +39,7 @@ module wide_accum_bank #(
         end
     endgenerate
 
-    // Quantize-and-saturate path, registered output
+    
     integer      ji;
     reg signed [ACC_WIDTH-1:0] shifted;
     reg signed [7:0]           sat;

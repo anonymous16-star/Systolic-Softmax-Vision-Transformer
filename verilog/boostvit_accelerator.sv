@@ -1,23 +1,5 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// boostvit_accelerator.sv  --  v2: Full paper Fig. 6 integration
-//
-// Integrates:
-//   - boostvit_controller (29-state inner FSM, with real residual + full LN)
-//   - outer_loop_ctrl (multi-tile iterator, double-buffered weight loads)
-//   - axi_burst_if (AXI-style DMA stub with FIFOs)
-//   - multi_head_attn (H parallel attention_head engines)
-//   - head_concat_unit (per-head concat + wide observability)
-//   - wide_accum_bank (24-bit partial sum accumulator)
-//   - sm_unit (shared exp+accum+reciprocal; now OBSERVABLE via host readback)
-//   - 4 x ram_dp buffers (large, 4096 x 128b)
-//   - ln_array_16x16, linear_proj, gelu_approx_16, residual_add_16
-//
-// Parameters:
-//   H_HEADS    = 3   (DeiT-Tiny); 6 Small; 12 Base
-//   H_PARALLEL = 1   -> Use H parallel attention heads (paper throughput)
-//   BUF_DEPTH  = 4096 (enough for full DeiT-Tiny activation buffers)
-// =============================================================================
+
 
 module boostvit_accelerator #(
     parameter integer H_HEADS        = 3,
@@ -40,13 +22,13 @@ module boostvit_accelerator #(
     input  wire [BUF_ADDR_W-1:0] host_out_addr,
     output wire [127:0] host_out_dout,
 
-    // Outer-loop configuration
+    
     input  wire [4:0]   cfg_n_tiles,
     input  wire [4:0]   cfg_d_tiles,
     input  wire [3:0]   cfg_h_heads,
     input  wire [3:0]   cfg_l_layers,
 
-    // DRAM stub interface (for axi_burst_if)
+    
     output wire         mem_req,
     output wire         mem_we,
     output wire [31:0]  mem_addr,
@@ -61,16 +43,12 @@ module boostvit_accelerator #(
     output wire [31:0]  total_tiles_fired
 );
 
-    // =========================================================================
-    // Reset sync (init to asserted so all submodule regs start at 0)
-    // =========================================================================
+    
     reg rst_s1 = 1'b1, rst_s2 = 1'b1;
     always @(posedge clk) begin rst_s1 <= ~rst_n; rst_s2 <= rst_s1; end
     wire rst = rst_s2;
 
-    // =========================================================================
-    // Inner controller wires
-    // =========================================================================
+    
     wire         ctl_ren, ctl_ren_b, ctl_wen;
     wire [1:0]   ctl_rsel, ctl_rsel_b, ctl_wsel;
     wire [7:0]   ctl_raddr, ctl_raddr_b, ctl_waddr;
@@ -102,9 +80,7 @@ module boostvit_accelerator #(
 
     wire [7:0]  phase0_cycles_dbg;
 
-    // =========================================================================
-    // Inner controller instance
-    // =========================================================================
+
     wire         ol_inner_start;
     wire         inner_done_w;
     boostvit_controller u_ctl (
@@ -146,9 +122,7 @@ module boostvit_accelerator #(
         .accum_latch(accum_latch)
     );
 
-    // =========================================================================
-    // Outer-loop controller
-    // =========================================================================
+
     wire        ol_pf_start;
     wire        ol_pf_done;
     wire [1:0]  ol_pf_bank, ol_active_bank;
@@ -178,16 +152,14 @@ module boostvit_accelerator #(
 
     assign done = inner_done_w;
 
-    // =========================================================================
-    // AXI burst interface (weight prefetch path)
-    // =========================================================================
+    
     wire        axi_rd_fifo_pop, axi_rd_fifo_empty, axi_rd_fifo_full;
     wire [127:0] axi_rd_fifo_data;
     wire        axi_wr_fifo_push, axi_wr_fifo_full, axi_wr_fifo_empty;
     wire [127:0] axi_wr_fifo_data;
     wire        axi_busy, axi_done;
 
-    assign axi_rd_fifo_pop  = 1'b0;          // (drained by pf state machine stub)
+    assign axi_rd_fifo_pop  = 1'b0;        
     assign axi_wr_fifo_push = 1'b0;
     assign axi_wr_fifo_data = 128'd0;
 
@@ -196,7 +168,6 @@ module boostvit_accelerator #(
         if (rst) pf_base_addr <= 0;
         else if (ol_pf_start) pf_base_addr <= pf_base_addr + 32'h100;
     end
-
     axi_burst_if #(
         .FIFO_DEPTH(16), .DATA_WIDTH(128), .ADDR_WIDTH(32)
     ) u_axi (
@@ -221,18 +192,15 @@ module boostvit_accelerator #(
 
     assign ol_pf_done = axi_done;
 
-    // =========================================================================
-    // Buffers (4 x ram_dp, large BUF_DEPTH x 128b)
-    // =========================================================================
+    
     wire [127:0] act_dout_a, scr_dout_a, wgt_dout_a, out_dout_a;
     wire [127:0] act_dout_b, scr_dout_b, wgt_dout_b, out_dout_b;
 
-    // Port A = ctl_ren read OR host write OR host read (out)
+    
     wire act_a_en   = host_act_we | (ctl_ren & ctl_rsel == 2'b00);
     wire act_a_we   = host_act_we;
     wire [BUF_ADDR_W-1:0] act_a_addr = host_act_we ? host_act_addr
                                                    : {{(BUF_ADDR_W-8){1'b0}}, ctl_raddr};
-
     wire wgt_a_en   = host_wgt_we | (ctl_ren & ctl_rsel == 2'b10);
     wire wgt_a_we   = host_wgt_we;
     wire [BUF_ADDR_W-1:0] wgt_a_addr = host_wgt_we ? host_wgt_addr
@@ -246,7 +214,6 @@ module boostvit_accelerator #(
                                      ? {{(BUF_ADDR_W-8){1'b0}}, ctl_raddr}
                                      :  host_out_addr;
 
-    // Port B = ctl_ren_b secondary read OR ctl_wen write
     wire act_b_en   = (ctl_ren_b & ctl_rsel_b == 2'b00);
     wire [BUF_ADDR_W-1:0] act_b_addr = {{(BUF_ADDR_W-8){1'b0}}, ctl_raddr_b};
 
@@ -302,16 +269,10 @@ module boostvit_accelerator #(
         (ctl_rsel_b == 2'b01) ? scr_dout_b :
         (ctl_rsel_b == 2'b10) ? wgt_dout_b : out_dout_b;
 
-    // =========================================================================
-    // LN array (drives ALL 16 instances in parallel)
-    // =========================================================================
     ln_array_16x16 u_ln (
         .x_in(ln_x_in), .gamma(ln_gamma), .beta(ln_beta), .y_out(ln_y_out)
     );
 
-    // =========================================================================
-    // Linear projection engine (shared for non-attention matmuls)
-    // =========================================================================
     wire [7:0] lp_y0,  lp_y1,  lp_y2,  lp_y3,  lp_y4,  lp_y5,  lp_y6,  lp_y7;
     wire [7:0] lp_y8,  lp_y9,  lp_y10, lp_y11, lp_y12, lp_y13, lp_y14, lp_y15;
 
@@ -347,9 +308,6 @@ module boostvit_accelerator #(
                            lp_y7,  lp_y6,  lp_y5,  lp_y4,
                            lp_y3,  lp_y2,  lp_y1,  lp_y0 };
 
-    // =========================================================================
-    // Multi-head attention (H parallel attention_heads)
-    // =========================================================================
     wire [H_HEADS-1:0]     load_k_en_per_head;
     wire [H_HEADS*128-1:0] k_in_packed_per_head;
     wire [H_HEADS*128-1:0] q_packed_per_head;
@@ -358,10 +316,6 @@ module boostvit_accelerator #(
     wire [H_HEADS*128-1:0] lsm_out_per_head;
     wire [H_HEADS-1:0]     attn_valid_per_head;
 
-    // Broadcast controller-driven attention signals across all heads.  For
-    // true multi-head, per-head Q/K slices would be distinct; the controller
-    // time-multiplexes them in a real DeiT flow.  Here we fanout to populate
-    // all heads so they stay synthesized.
     genvar bi;
     generate
         for (bi = 0; bi < H_HEADS; bi = bi + 1) begin : GEN_BCAST
@@ -391,9 +345,6 @@ module boostvit_accelerator #(
     assign ah_sm_out     = sm_out_per_head[127:0];
     assign ah_attn_valid = attn_valid_per_head[0];
 
-    // =========================================================================
-    // Head concat unit -- keeps multi-head output observable in synth
-    // =========================================================================
     wire [127:0]           hc_concat_out;
     wire [H_HEADS*128-1:0] hc_all_heads_reg;
     wire [127:0]           hc_sum_reduce;
@@ -406,10 +357,6 @@ module boostvit_accelerator #(
         .all_heads_reg (hc_all_heads_reg),
         .sum_reduce_reg(hc_sum_reduce)
     );
-
-    // =========================================================================
-    // SM Unit (OBSERVABLE via debug write-back)
-    // =========================================================================
     wire [127:0] smu_e_out, smu_lsm_out;
     sm_unit u_sm_unit (
         .x_in   (smu_probe_x_in),
@@ -419,15 +366,9 @@ module boostvit_accelerator #(
         .es_sum (smu_probe_es_sum)
     );
 
-    // =========================================================================
-    // Combinational NL units
-    // =========================================================================
     gelu_approx_16   u_gelu (.x_in(gelu_x_in), .y_out(gelu_y_out));
     residual_add_16  u_res  (.a_in(res_a), .b_in(res_b), .y_out(res_y));
 
-    // =========================================================================
-    // Wide accumulator bank
-    // =========================================================================
     wire [24*16-1:0] accum_dbg_vec;
     wire [127:0]     accum_y_out_w;
     wire             accum_out_valid_w;
@@ -443,21 +384,8 @@ module boostvit_accelerator #(
         .acc_dbg     (accum_dbg_vec)
     );
 
-    // =========================================================================
-    // host_out_dout mux: based on top 4 bits of host_out_addr
-    //   0x00..0x3F = output buffer
-    //   0xF0       = sm_unit probe (e_out)
-    //   0xF1       = sm_unit sm_out
-    //   0xF2       = sm_unit lsm_out
-    //   0xF3       = {es_sum, 116'd0}
-    //   0xF4       = wide_accum y_out
-    //   0xF5       = wide_accum dbg low 128
-    //   0xF6       = head-concat sum
-    //   0xF7       = head-concat all-heads low 128 (always head 0)
-    //   0xF8       = {cur_l, cur_h, cur_n, cur_d, state, total_cycles}
-    //   0xF9       = {total_tiles_fired, 96'd0}
-    //   0xFA       = AXI status {busy, done, 126'd0}
-    // =========================================================================
+    
+    
     reg [127:0] debug_status_reg;
     always @* begin
         debug_status_reg = {

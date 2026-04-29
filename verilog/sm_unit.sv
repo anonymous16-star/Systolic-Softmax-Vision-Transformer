@@ -1,35 +1,14 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// sm_unit.sv  --  Paper's "SM. Unit" (Fig. 6, Section V-B-2)
-//
-//   Quote: "The SM. Unit performs exponential, accumulation, and reciprocal
-//           operations, which serve as the fundamental computations for both
-//           SoftMax and LayerNorm."
-//
-// This is a wrapper that bundles the three fundamental primitives
-// (expcalc_v2, accumulator, logcalc_wide_v2 for reciprocal-via-log) into
-// a single block so Vivado's synthesis hierarchy reports it as one unit.
-//
-//   Mode 0 (SOFTMAX): e[i] = exp(x[i] - x_max), s = Sum(e), y = e/s
-//   Mode 1 (LN_VAR) : ignored here (LN reuses layer_norm_16 per-token);
-//                     present for completeness of paper's block diagram.
-//
-// Uses your LUT-based expcalc_v2 / logcalc_wide_v2 -- NOT Taylor.
-//
-// This module is COMBINATIONAL in the data path; the "accumulation" is
-// a fully-unrolled 16-input adder tree.
-// =============================================================================
+
 
 module sm_unit (
-    input  wire [127:0] x_in,      // 16 x signed INT8 logits
-    output wire [127:0] e_out,     // per-element exp, Q1.7 unsigned
-    output wire [127:0] sm_out,    // softmax, Q1.7 unsigned (sums to ~128)
-    output wire [127:0] lsm_out,   // log-softmax, Q3.5 signed
-    output wire [11:0]  es_sum     // sum of e, 12-bit unsigned
+    input  wire [127:0] x_in,      
+    output wire [127:0] e_out,     
+    output wire [127:0] sm_out,    
+    output wire [127:0] lsm_out,   
+    output wire [11:0]  es_sum     
 );
 
-    // ---- Stage 1: subtract max (prevents exp-overflow, same result
-    //       due to softmax invariance).  We compute max via 16-way tree.
     wire signed [7:0] xi [0:15];
     genvar gi;
     generate
@@ -38,7 +17,7 @@ module sm_unit (
         end
     endgenerate
 
-    // 16-way max reduction
+    
     function signed [7:0] smax;
         input signed [7:0] a, b;
         smax = (a > b) ? a : b;
@@ -60,8 +39,8 @@ module sm_unit (
     wire signed [7:0] mlo  = smax(m8_b, mc_f);
     wire signed [7:0] x_max = smax(mhi, mlo);
 
-    // Subtract max (saturated to <= 0, fits in signed 8-bit since
-    // all differences are <= 0)
+    
+    
     wire [127:0] x_shifted;
     generate
         for (gi = 0; gi < 16; gi = gi + 1) begin : GEN_SUB
@@ -70,7 +49,7 @@ module sm_unit (
         end
     endgenerate
 
-    // ---- Stage 2: 16 parallel expcalc_v2 (your LUT-based exp)
+    
     generate
         for (gi = 0; gi < 16; gi = gi + 1) begin : GEN_EXP
             expcalc_v2 u_exp (
@@ -79,9 +58,7 @@ module sm_unit (
             );
         end
     endgenerate
-
-    // ---- Stage 3: softmax normalization via your softmax_from_exp_16
-    //  (which does accumulation + reciprocal-via-log internally)
+ 
     softmax_from_exp_16 u_sm (
         .e_in   (e_out),
         .sm_out (sm_out),

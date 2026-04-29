@@ -1,21 +1,8 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// fifo - Synchronous First-Word-Fall-Through (FWFT) FIFO
-//
-// CORNER-CASE FIX [C1] (vs original):
-//   - DEPTH changed from 9 -> 16 (power of 2).  Original had a subtle
-//     pointer wrap-around bug: wr_ptr/rd_ptr lower ADDR_WIDTH=4 bits wrap
-//     at 16 while mem[] only had 9 entries; mem[9..15] was undefined if
-//     the ptr ever reached those indices.  With DEPTH=16 the mask exactly
-//     matches the array size, eliminating the bug.
-//   - Paper (BoostViT Section V-B) uses FIFO depth == max timing skew;
-//     depth=16 is a safe over-provision that behaves identically for the
-//     skew range 0..9 but avoids the latent overflow bug.
-// =============================================================================
 
 module fifo #(
     parameter WIDTH      = 8,
-    parameter DEPTH      = 16,      // FIXED: was 9 (non-pow2). Now 16.
+    parameter DEPTH      = 16,    
     parameter ADDR_WIDTH = 4
 )(
     input                  clk,
@@ -66,7 +53,6 @@ module fifo #(
     assign full  = (wr_ptr[ADDR_WIDTH]     != rd_ptr[ADDR_WIDTH]) &&
                    (wr_ptr[ADDR_WIDTH-1:0] == rd_ptr[ADDR_WIDTH-1:0]);
 
-    // FWFT bypass
     assign dout = (empty  && wr_en)              ? din :
                   (rd_en  && wr_en && !empty)    ? din :
                   mem[rd_ptr[ADDR_WIDTH-1:0]];

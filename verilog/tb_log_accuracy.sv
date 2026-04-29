@@ -1,22 +1,5 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_log_accuracy.sv  --  exhaustive accuracy test for logcalc_v2
-// =============================================================================
-//
-// WHAT IT MEASURES:
-//   For every input x in [1, 1023] (excluding x=0 which is log(-inf)), compare
-//   logcalc_v2's LUT-based output to a FP reference ln(x) * 32.
-//
-//   Two domains:
-//     (a) x in [1, 255]    -- the main production range (8-bit zero-extended)
-//                             used by softmax's log(e^x) -> log-softmax path
-//     (b) x in [256, 1023] -- extended range for logcalc_wide_v2 style use
-//
-//   ENCODING:
-//     log_x is Q3.5 unsigned, ranging 0..177 approximately.
-//
-// OUTPUT: ULP-error histogram + summary.
-// =============================================================================
+
 
 module tb_log_accuracy;
 

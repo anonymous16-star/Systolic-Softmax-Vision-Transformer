@@ -1,24 +1,4 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// multi_head_attn.sv  --  Parameterizable H-way parallel attention engine
-//
-// Paper Section II-A-1 (Eq. 1): MHSA has H heads, each computing
-//   Hi = Softmax(Q_i * K_i^T / sqrt(d_k)) * V_i
-// then Concat(H_1..H_H) * W_O.
-//
-// For DeiT-Tiny:  H = 3,  d_k = 64
-// For DeiT-Small: H = 6,  d_k = 64
-// For DeiT-Base:  H = 12, d_k = 64
-//
-// This module instantiates H parallel `attention_head` engines so all heads
-// run concurrently on the N/16 x N/16 attention tile.  Paper time-multiplexes
-// a single array across heads; we expose both modes:
-//   H_PARALLEL = 1  ->  H copies of attention_head (area-scaled, time-shared ctrl)
-//   H_PARALLEL = 0  ->  Single attention_head (time-mux across heads in software)
-//
-// Default H_PARALLEL = 1 (parallel) to match paper throughput claims.
-//
-// =============================================================================
 
 module multi_head_attn #(
     parameter integer H_HEADS        = 3,
@@ -29,16 +9,16 @@ module multi_head_attn #(
     input  wire                   clk,
     input  wire                   rst,
 
-    // Per-head K-load (each head has its own K matrix of shape dk x N tile)
+    
     input  wire [H_HEADS-1:0]     load_k_en_per_head,
     input  wire [3:0]             load_k_col,
     input  wire [H_HEADS*128-1:0] k_in_packed_per_head,
 
-    // Per-head Q stream
+    
     input  wire [H_HEADS*128-1:0] q_packed_per_head,
     input  wire [H_HEADS-1:0]     valid_q_per_head,
 
-    // Per-head softmax output
+    
     output wire [H_HEADS*128-1:0] sm_out_per_head,
     output wire [H_HEADS*128-1:0] lsm_out_per_head,
     output wire [H_HEADS-1:0]     attn_valid_per_head
@@ -83,8 +63,8 @@ module multi_head_attn #(
                 );
             end
         end else begin : GEN_SER_HEADS
-            // Single attention_head time-multiplexed; controller must feed one
-            // head per invocation.  (Not used in default H_PARALLEL=1 path.)
+            
+            
             wire [127:0] mux_k, mux_q;
             wire         mux_load_k, mux_valid_q;
             wire [127:0] mux_sm, mux_lsm;
@@ -92,7 +72,7 @@ module multi_head_attn #(
             wire [11:0]  es_dbg_unused;
             wire         mux_valid;
 
-            // Round-robin: head 0 (simplification).  Controller time-mux.
+            
             assign mux_k       = k_in_packed_per_head[127:0];
             assign mux_q       = q_packed_per_head   [127:0];
             assign mux_load_k  = load_k_en_per_head  [0];

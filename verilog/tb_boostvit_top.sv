@@ -1,14 +1,10 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_boostvit_top.sv  --  smoke test for synthesis wrapper boostvit_top.sv
-// Verifies the registered-I/O wrapper produces valid softmax output.
-// =============================================================================
 
 module tb_boostvit_top;
 
     reg clk, rst_n;
     initial clk = 0;
-    always #1 clk = ~clk;                // 500 MHz
+    always #1 clk = ~clk;                
 
     reg         load_k_en;
     reg  [3:0]  load_k_col;
@@ -48,7 +44,7 @@ module tb_boostvit_top;
         rst_n = 1'b1;
         repeat(4) @(posedge clk);
 
-        // Load 16 K columns (small values for demo)
+        
         for (col = 0; col < 16; col = col + 1) begin
             for (r = 0; r < 16; r = r + 1)
                 col_packed[r*8 +: 8] = 8'(((r*5 + col*3) & 5'h1F) - 16);
@@ -60,7 +56,7 @@ module tb_boostvit_top;
             load_k_en = 1'b0;
         end
 
-        // Stream 16 Q rows
+        
         for (col = 0; col < 16; col = col + 1) begin
             @(negedge clk);
             q0  = 8'(((col*3 + 0*5) & 5'h1F) - 16);  q1  = 8'(((col*3 + 1*5) & 5'h1F) - 16);

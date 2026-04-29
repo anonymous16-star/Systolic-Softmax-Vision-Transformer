@@ -1,16 +1,6 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// softmax_16  --  16-input log-softmax (DEPRECATED; use softmax_from_exp_16)
-// =============================================================================
-//
-// NOTE: systolic_16x16_softmax now uses softmax_from_exp_16 (which takes
-//       pre-computed exp values and avoids redundant exp evaluation).
-//       This file is retained for backward-compatibility testbenches.
-//
-// CORNER-CASE FIX [M1]: saturate diff = log_ei - log_sum before taking
-//   lower 8 bits, preventing silent wrap if log_sum goes outside the
-//   expected [-127..127] relative range.
-// =============================================================================
+
+
 module softmax_16 (
     input  wire [127:0] psum_in,
     output wire [127:0] lsm_out,
@@ -59,7 +49,7 @@ module softmax_16 (
                 .log_x (log_ei)
             );
 
-            // [M1 FIX] saturate
+            
             assign diff_s = $signed({1'b0, 8'b0, log_ei}) -
                             $signed({1'b0, log_sum});
             assign lsm_out[i*8 +: 8] =

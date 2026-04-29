@@ -1,51 +1,12 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_bspe_tile_cycles.sv  --  hardware-accurate tile cycle measurement
-// =============================================================================
-//
-// PURPOSE:
-//   Measures how many cycles ONE 16x16 attention tile takes when driven
-//   through the real attention_head (= BSPE systolic array + softmax).
-//   Unlike tb_vit_all_models.sv (which uses a behavioural shortcut for QKV
-//   and MLP so that one tile-run takes ~50 cycles), this testbench drives
-//   attention_head directly and counts every cycle between:
-//
-//     start  = first cycle load_k_en asserted
-//     finish = cycle when attn_valid is observed high for the first time
-//
-//   The result is the number the BoostViT paper reports in Fig. 10 / Table II.
-//
-// WHAT IT MEASURES:
-//     T_load   = 16 cycles (loading K one column at a time)
-//     T_qstream= 16 cycles (streaming Q row by row)
-//     T_drain  = pipeline depth until last PE's exp is ready + softmax latency
-//
-// PAPER COMPARISON (DeiT-Tiny):
-//     Paper reports ~50-60 cycles per tile at 500 MHz for BSPE array.
-//     If we see ~48 cycles here, we are aligned with the paper's numbers.
-//
-// REPRODUCIBILITY NOTE:
-//     This runs the same attention computation twice:
-//       1. with BOOTH_LSB_SCALE=1 (Booth-Friendly LSB Scaling enabled)
-//       2. with BOOTH_LSB_SCALE=0 (disabled)
-//     Both should produce the SAME cycle count (scaling only changes
-//     which multiplications are skipped inside each PE, not the
-//     systolic timing).  But the paper's key claim is that the SKIP
-//     RATE (not wall-clock cycles) goes from 36.5% to 56.4% -- measured
-//     in tb_boostvit_accuracy.sv.
-// =============================================================================
 
 module tb_bspe_tile_cycles;
-    // -------------------------------------------------------------------------
-    // Clock and reset
-    // -------------------------------------------------------------------------
+    
+    
+    
     reg clk, rst;
     initial clk = 1'b0;
-    always #5 clk = ~clk;              // 100 MHz for sim convenience
-
-    // -------------------------------------------------------------------------
-    // DUT with LSB scaling ON
-    // -------------------------------------------------------------------------
+    always #5 clk = ~clk;            
     reg          load_k_en;
     reg  [3:0]   load_k_col;
     reg  [127:0] k_packed;
@@ -76,9 +37,6 @@ module tb_bspe_tile_cycles;
         .attn_valid(attn_valid)
     );
 
-    // -------------------------------------------------------------------------
-    // Test matrices (small signed values to keep dot products in-range)
-    // -------------------------------------------------------------------------
     reg signed [7:0] K_mat [0:15][0:15];
     reg signed [7:0] Q_mat [0:15][0:15];
 
@@ -91,9 +49,6 @@ module tb_bspe_tile_cycles;
             end
     end
 
-    // -------------------------------------------------------------------------
-    // Helpers: load one K column and stream one Q row
-    // -------------------------------------------------------------------------
     task load_k_column(input integer col);
         integer rr;
         reg [127:0] pkt;
@@ -126,9 +81,6 @@ module tb_bspe_tile_cycles;
     end
     endtask
 
-    // -------------------------------------------------------------------------
-    // Cycle counters
-    // -------------------------------------------------------------------------
     integer cyc_start_k, cyc_end_k;
     integer cyc_start_q, cyc_end_q;
     integer cyc_finish;
@@ -136,9 +88,6 @@ module tb_bspe_tile_cycles;
 
     always @(posedge clk) cyc_now <= cyc_now + 1;
 
-    // -------------------------------------------------------------------------
-    // Main sequence
-    // -------------------------------------------------------------------------
     integer c2;
     integer timeout_cnt;
     integer last_attn_valid_cycle;
@@ -162,19 +111,16 @@ module tb_bspe_tile_cycles;
         $display("  Measuring cycles from first load_k_en to first attn_valid");
         $display("");
 
-        // ---------------- Phase 1: load K matrix ---------------
         cyc_start_k = cyc_now;
         for (c2 = 0; c2 < 16; c2 = c2 + 1)
             load_k_column(c2);
         cyc_end_k = cyc_now;
 
-        // ---------------- Phase 2: stream Q -------------------
         cyc_start_q = cyc_now;
         for (c2 = 0; c2 < 16; c2 = c2 + 1)
             stream_q_row(c2);
         cyc_end_q = cyc_now;
 
-        // ---------------- Phase 3: wait for attn_valid --------
         timeout_cnt = 0;
         while (!attn_valid && timeout_cnt < 100) begin
             @(posedge clk);

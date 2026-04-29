@@ -137,9 +137,9 @@ Addresses 0x000..0x3FF are normal output-buffer reads (4 KB window).
 
 ```
 boostvit_accelerator #(
-    .H_HEADS   (3),      // 3 for DeiT-Tiny, 6 for Small, 12 for Base
-    .H_PARALLEL(1),      // 1 = H parallel attention_heads;
-                         // 0 = single head time-multiplexed
+    .H_HEADS   (3),      
+    .H_PARALLEL(1),      
+                         
     .BUF_DEPTH (4096),
     .BUF_ADDR_W(12)
 ) u_accel ( ... );

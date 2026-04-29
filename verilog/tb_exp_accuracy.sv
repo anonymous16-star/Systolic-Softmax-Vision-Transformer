@@ -1,22 +1,5 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_exp_accuracy.sv  --  exhaustive accuracy test for expcalc_v2
-// =============================================================================
-//
-// WHAT IT MEASURES:
-//   For every signed 8-bit input psum in [-128, 127], compare expcalc_v2's
-//   LUT-based output to a FP reference exp(psum/128) * 128.
-//
-//   Since expcalc_v2 is intended for the softmax-stabilised regime
-//   (psum <= 0), we report THREE error statistics:
-//     - Over the valid domain psum in [-128, 0]     (the used range)
-//     - Over the clamped domain psum in [1, 127]    (should all output 128)
-//     - Over the full 256-value range (for completeness)
-//
-//   Paper's expcalc claim: Max |ULP| ~= 0.93, Mean |ULP| ~= 0.31
-//
-// OUTPUT TABLE: ULP error histogram + summary numbers reviewers can cite.
-// =============================================================================
+
 
 module tb_exp_accuracy;
 
@@ -34,7 +17,7 @@ module tb_exp_accuracy;
     real    sum_abs_err_valid, max_abs_err_valid;
     real    sum_abs_err_full,  max_abs_err_full;
     integer n_valid, n_full;
-    integer hist [0:10];    // ULP error histogram buckets: 0, 1, 2, ..., 9, >=10
+    integer hist [0:10];    
 
     initial begin
         $display("");
@@ -50,13 +33,13 @@ module tb_exp_accuracy;
 
         for (i = -128; i <= 127; i = i + 1) begin
             psum = i[7:0];
-            #1;                                  // combinational settle
+            #1;                                  
 
-            // FP reference: exp(x) scaled to Q1.7
-            if (i >= 0)  x_real = 0.0;           // clamp matches HW behaviour
+            
+            if (i >= 0)  x_real = 0.0;           
             else         x_real = $itor(i) / 128.0;
             e_real  = $exp(x_real);
-            e_ref   = e_real * 128.0 + 0.5;      // round-half-up
+            e_ref   = e_real * 128.0 + 0.5;      
             ref_int = $rtoi(e_ref);
             if (ref_int < 0)   ref_int = 0;
             if (ref_int > 255) ref_int = 255;
@@ -64,7 +47,7 @@ module tb_exp_accuracy;
             err     = $itor(psum_exp) - $itor(ref_int);
             abs_err = (err < 0.0) ? -err : err;
 
-            // Histogram (clamp to bucket 10 for |err| >= 10)
+            
             if (abs_err >= 10.0) hist[10] = hist[10] + 1;
             else begin
                 for (integer h = 0; h < 10; h = h + 1)
@@ -72,19 +55,19 @@ module tb_exp_accuracy;
                         hist[h] = hist[h] + 1;
             end
 
-            // Full-range stats
+            
             sum_abs_err_full = sum_abs_err_full + abs_err;
             if (abs_err > max_abs_err_full) max_abs_err_full = abs_err;
             n_full = n_full + 1;
 
-            // Valid-range stats (psum <= 0 = the used domain)
+            
             if (i <= 0) begin
                 sum_abs_err_valid = sum_abs_err_valid + abs_err;
                 if (abs_err > max_abs_err_valid) max_abs_err_valid = abs_err;
                 n_valid = n_valid + 1;
             end
 
-            // Spot-check a few interesting points
+            
             if (i == -128 || i == -64 || i == -32 || i == -16 || i == -8 ||
                 i == -4   || i == -2  || i == -1  || i ==  0  || i ==  1  ||
                 i ==  64  || i == 127)

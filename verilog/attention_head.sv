@@ -1,66 +1,40 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// attention_head.sv  --  Single-head attention: S = softmax(Q * K^T)
-//
-// PURPOSE:
-//   Implements one attention head of Multi-Head Self-Attention.
-//   Wraps the 16x16 BSPE systolic array with Booth-Serial Skipping and
-//   exposes BOTH normal softmax (for V multiplication) and log-softmax
-//   (for analysis / comparison with the BoostViT paper's lsm_out).
-//
-// BOOTH-FRIENDLY LSB SCALING (paper Section IV-B-1):
-//   If k > 0: bits [5:3] (4th-6th LSBs) set to 1s   (k | 0x38)
-//   If k < 0: bits [5:3] set to 0s                   (k & 0xC7)
-//   Applied BEFORE loading K into the array.
-//   Paper reports skip rate goes from 36.5% to 56.4% with minimal acc drop.
-//
-// dk SCALING:
-//   Paper scales Q*K^T by 1/sqrt(dk) in software before feeding to hardware.
-//   For dk=16 this is a >>2 right-shift that the caller applies to Q.
-//
-// OUTPUTS:
-//   sm_out  : 16 Q1.7 unsigned softmax weights  (PRIMARY - used by MHSA)
-//   lsm_out : 16 Q3.5 signed log-softmax        (DEBUG / paper-style)
-//   exp_dbg : 16 Q1.7 unsigned exp values       (DEBUG)
-//   es_dbg  : sum of exp                        (DEBUG)
-// =============================================================================
+
 
 module attention_head #(
-    parameter BOOTH_LSB_SCALE = 1,   // 1: enable Booth-friendly LSB scaling
-    parameter THRESHOLD       = 10   // attention score early-termination threshold
+    parameter BOOTH_LSB_SCALE = 1,   
+    parameter THRESHOLD       = 10   
 )(
     input  wire        clk,
     input  wire        rst,
 
-    // K loading: caller loads K weights one column at a time
-    input  wire        load_k_en,    // 1 = load k_col into column load_k_col
-    input  wire [3:0]  load_k_col,   // which column (0..15) to load
-    input  wire [127:0] k_in_packed, // 16x8b: k_in_packed[r*8+:8] = K[r, load_k_col]
+    
+    input  wire        load_k_en,    
+    input  wire [3:0]  load_k_col,   
+    input  wire [127:0] k_in_packed, 
 
-    // Q streaming: one row of Q per valid_q cycle
+    
     input  wire [7:0]  q0,  q1,  q2,  q3,
     input  wire [7:0]  q4,  q5,  q6,  q7,
     input  wire [7:0]  q8,  q9,  q10, q11,
     input  wire [7:0]  q12, q13, q14, q15,
     input  wire        valid_q,
 
-    // Outputs
-    output wire [127:0] sm_out,     // 16 Q1.7 unsigned softmax        <-- PRIMARY
-    output wire [127:0] lsm_out,    // 16 Q3.5 signed log-softmax      <-- DEBUG
-    output wire [127:0] exp_dbg,    // 16 Q1.7 unsigned exp values     <-- DEBUG
-    output wire [11:0]  es_dbg,     // sum of exp                      <-- DEBUG
+    
+    output wire [127:0] sm_out,     
+    output wire [127:0] lsm_out,    
+    output wire [127:0] exp_dbg,    
+    output wire [11:0]  es_dbg,     
     output wire         attn_valid
 );
 
-    // =========================================================================
-    // Booth-Friendly LSB Scaling  (paper Section IV-B-1)
-    // =========================================================================
+    
     function automatic [7:0] apply_lsb_scale(input signed [7:0] k);
         if (BOOTH_LSB_SCALE) begin
-            if (!k[7])   // k >= 0
-                apply_lsb_scale = k | 8'b0011_1000;   // set bits [5:3]
-            else         // k < 0
-                apply_lsb_scale = k & 8'b1100_0111;   // clear bits [5:3]
+            if (!k[7])   
+                apply_lsb_scale = k | 8'b0011_1000;  
+            else         
+                apply_lsb_scale = k & 8'b1100_0111;   
         end else begin
             apply_lsb_scale = k;
         end
@@ -74,14 +48,10 @@ module attention_head #(
         end
     endgenerate
 
-    // =========================================================================
-    // load_k_col (0..15) -> load_kc1..16 one-hot strobe decoder
-    // =========================================================================
+
     wire [15:0] load_kc_vec = load_k_en ? (16'h0001 << load_k_col) : 16'h0000;
 
-    // =========================================================================
-    // Systolic array with softmax (uses new softmax_from_exp_16)
-    // =========================================================================
+
     systolic_16x16_softmax u_sys_sm (
         .clk       (clk),
         .rst       (rst),

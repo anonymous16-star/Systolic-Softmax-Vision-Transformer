@@ -1,7 +1,5 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// boostvit_controller.sv  --  Master FSM (v2: real residual, full LN, obs)
-// =============================================================================
+
 
 module boostvit_controller (
     input  wire        clk,
@@ -12,31 +10,31 @@ module boostvit_controller (
     output reg [15:0]  total_cycles,
     output reg [4:0]   cur_state_dbg,
 
-    // Buffer port A (primary read)
+    
     output reg         buf_ren,
     output reg [1:0]   buf_sel,
     output reg [7:0]   buf_raddr,
     input  wire [127:0] buf_rdata,
 
-    // Buffer port B (secondary read)
+    
     output reg         buf_ren_b,
     output reg [1:0]   buf_sel_b,
     output reg [7:0]   buf_raddr_b,
     input  wire [127:0] buf_rdata_b,
 
-    // Controller write
+    
     output reg         buf_wen,
     output reg [1:0]   buf_wsel,
     output reg [7:0]   buf_waddr,
     output reg [127:0] buf_wdata,
 
-    // LN array
+    
     output reg  [2047:0] ln_x_in,
     output reg  [127:0]  ln_gamma,
     output reg  [127:0]  ln_beta,
     input  wire [2047:0] ln_y_out,
 
-    // Linear projection engine
+    
     output reg         lp_rst_sync,
     output reg [15:0]  lp_load_cols,
     output reg [127:0] lp_w,
@@ -45,7 +43,7 @@ module boostvit_controller (
     input  wire [127:0] lp_y_packed,
     input  wire        lp_out_valid,
 
-    // Attention engine
+    
     output reg         ah_rst_sync,
     output reg         ah_load_k_en,
     output reg [3:0]   ah_load_k_col,
@@ -55,19 +53,19 @@ module boostvit_controller (
     input  wire [127:0] ah_sm_out,
     input  wire        ah_attn_valid,
 
-    // GELU + residual
+    
     output reg  [127:0] gelu_x_in,
     input  wire [127:0] gelu_y_out,
     output reg  [127:0] res_a,
     output reg  [127:0] res_b,
     input  wire [127:0] res_y,
 
-    // SM Unit observability
+    
     output reg  [127:0] smu_probe_x_in,
     input  wire [127:0] smu_probe_sm_out,
     input  wire [11:0]  smu_probe_es_sum,
 
-    // Wide accum bank
+    
     output reg         accum_clear,
     output reg         accum_valid_in,
     output reg  [127:0] accum_y_in,
@@ -125,9 +123,9 @@ module boostvit_controller (
     reg [2047:0] ln_batch_reg;
     reg [2047:0] ln_y_latched;
 
-    // Counts lp_out_valid pulses within a CAPTURE state; used as the
-    // real write index (LP_DRAIN gating was wrong because out_valid
-    // actually fires during CAPTURE cnt = 0..12, not 12..27).
+    
+    
+    
     reg [4:0] lp_wr_cnt;
     reg [4:0] prev_state;
     always @(posedge clk) begin
@@ -347,7 +345,7 @@ module boostvit_controller (
         end
     end
 
-    // ---- Combinational outputs ----
+    
     integer gi;
     always @* begin
         buf_ren      = 1'b0; buf_sel      = BUF_ACT;     buf_raddr    = cnt;
@@ -376,8 +374,6 @@ module boostvit_controller (
         gelu_x_in    = 128'd0;
         res_a        = 128'd0;
         res_b        = 128'd0;
-        // Non-zero default so post-sim observability reads at sm_unit
-        // addresses return determinate values.  Overridden below in LN/QK states.
         smu_probe_x_in = 128'h10203040504030201000F0E0D0C0B0A0;
 
         accum_clear    = 1'b0;
@@ -398,10 +394,9 @@ module boostvit_controller (
 
             S_WQ_LOAD, S_WK_LOAD, S_WV_LOAD, S_AV_V_LOAD, S_WO_LOAD,
             S_MLP1_LOAD, S_MLP2_LOAD: begin
-                // Issue read at cnt=0..DT-1, data arrives 1 cycle later
                 buf_ren   = 1'b1; buf_sel = BUF_WEIGHT; buf_raddr = cnt;
                 lp_w      = buf_rdata;
-                // Latch col = cnt-1 once data is valid (cnt >= 1)
+                
                 if (cnt >= 1 && cnt <= DT)
                     lp_load_cols[(cnt - 1) & 4'hF] = 1'b1;
                 accum_clear = 1'b1;
@@ -475,7 +470,7 @@ module boostvit_controller (
             S_WO_CAPTURE: begin
                 if (lp_out_valid && lp_wr_cnt < NT) begin
                     buf_wen = 1'b1; buf_wsel = BUF_SCRATCH;
-                    buf_waddr = 8'd160 + lp_wr_cnt;      // scratch[160..175]
+                    buf_waddr = 8'd160 + lp_wr_cnt;    
                     buf_wdata = lp_y_packed;
                     accum_valid_in = 1'b1; accum_y_in = lp_y_packed;
                     accum_latch    = 1'b1;
@@ -520,7 +515,7 @@ module boostvit_controller (
             S_MLP2_CAP: begin
                 if (lp_out_valid && lp_wr_cnt < NT) begin
                     buf_wen = 1'b1; buf_wsel = BUF_SCRATCH;
-                    buf_waddr = 8'd128 + lp_wr_cnt;      // scratch[128..143]
+                    buf_waddr = 8'd128 + lp_wr_cnt;     
                     buf_wdata = lp_y_packed;
                     accum_valid_in = 1'b1; accum_y_in = lp_y_packed;
                     accum_latch    = 1'b1;

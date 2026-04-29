@@ -1,32 +1,4 @@
 `timescale 1ns / 1ps
-// =============================================================================
-// tb_boostvit_accuracy.sv  --  BoostViT accuracy / skip-rate testbench
-//                              (paper-comparable, TCAS-I Nov 2025)
-// =============================================================================
-//
-// CORNER-CASE FIX [C4] vs original testbench:
-//   - Original K matrix had tiny values in [-7, 13] ALL with MSB-4 = 0000 or
-//     1111 (100% density), producing UNIFORM attention and INVERTED skip-rate
-//     trend (natural > LSB, opposite of paper).
-//   - New K matrix mimics quantized DeiT weights: ~91% MSB-dense (values
-//     in [-16, 15]) but includes a 9% tail of medium values (|k| in [16, 63])
-//     that exercise the 4th-6th LSB positions the paper targets.
-//   - New Q matrix varies per TOKEN so attention scores are non-uniform.
-//   - We now test MULTIPLE Q tokens (rows 0, 3, 7, 11, 15) and average error.
-//
-// MEASURES:
-//   T1 Skip rate: natural vs LSB-scaled   (paper Fig. 11a: 36.5% -> 56.4%)
-//   T2 Reference softmax (FP)             sanity
-//   T3 HW softmax WITH LSB scaling        per-token
-//   T4 HW softmax WITHOUT LSB scaling     per-token, compare to T3
-//   T5 MSB identical-bit density          paper Fig. 2: >90%
-//
-// HOW TO COMPARE AGAINST PAPER:
-//   - Skip-rate increase: SKIP_RATE_LSB - SKIP_RATE_NATURAL ~= +20 %
-//   - Accuracy drop:      MAX_SOFTMAX_ERR  < 1.5 %
-//   - Sum check:          softmax sums to 1.0 (Q1.7 = 128)
-//
-// =============================================================================
 
 module tb_boostvit_accuracy;
 
@@ -34,9 +6,7 @@ module tb_boostvit_accuracy;
     initial clk = 0;
     always #5 clk = ~clk;
 
-    // =========================================================================
-    // Two DUTs: WITH / WITHOUT Booth-Friendly LSB Scaling
-    // =========================================================================
+
     reg        load_k_en;
     reg [3:0]  load_k_col;
     reg [127:0] k_packed;
@@ -81,12 +51,8 @@ module tb_boostvit_accuracy;
         .attn_valid(valid_ns)
     );
 
-    // =========================================================================
-    // Realistic ViT-like INT8 K matrix (paper Fig. 2 distribution)
-    //   - 91% in [-16, 15]  (MSB-dense, first 4 MSBs = 0000 or 1111)
-    //   -  9% outliers in [-63, -17] or [17, 63]  (exercise mid bits 5:3)
-    //   - Row-structured variation so attention scores differ per token
-    // =========================================================================
+   
+    
     reg signed [7:0] K_mat [0:15][0:15];
     reg signed [7:0] Q_mat [0:15][0:15];
     real             K_real [0:15][0:15];
@@ -95,25 +61,13 @@ module tb_boostvit_accuracy;
     function automatic [7:0] gen_k (input integer r, input integer c);
         integer seed, v, bucket;
         begin
-            // Distribution that demonstrates paper's LSB-scaling benefit.
-            //
-            // The paper's +20% skip improvement comes from weights whose
-            // bits [5:3] are NATURALLY MIXED -- LSB scaling aligns them to
-            // 111/000 creating new Booth-skip groups.  We engineer the
-            // distribution to include values like 38, 42, 50, -38, ...
-            // where this effect is visible.
-            //
-            //   50% MSB-dense in [-15, 15]    -- paper Fig 2
-            //   50% with naturally-mixed bits [5:3] (38, 42, 50, 54, 58, ...)
-            //        These are the "LSB-scaling sweet spot" values.
-            //
-            // Note: for a 1:1 match with the paper's numbers, load real
-            // INT8-quantised DeiT-Tiny weights from a checkpoint.
+
+            
             seed   = ((r + 1) * 37 + (c + 1) * 73) & 8'hFF;
             bucket = seed % 100;
-            if (bucket < 50) begin                           // 50% MSB-dense
-                v = (seed % 31) - 15;                        // [-15, 15]
-            end else begin                                   // 50% mixed-bit
+            if (bucket < 50) begin                          
+                v = (seed % 31) - 15;                       
+            end else begin                                  
                 case (bucket % 10)
                     0: v =  38;  1: v =  42;  2: v =  50;
                     3: v =  54;  4: v =  46;
@@ -129,8 +83,8 @@ module tb_boostvit_accuracy;
         integer seed, v;
         begin
             seed = ((r + 7) * 41 + (c + 3) * 29) & 8'hFF;
-            v    = (seed % 21) - 10;                     // [-10, 10]
-            // token-dependent rotation so each Q row is different
+            v    = (seed % 21) - 10;                     
+            
             v = v + (((r * 5) % 7) - 3);
             if (v > 31)  v = 31;
             if (v < -32) v = -32;
@@ -138,9 +92,9 @@ module tb_boostvit_accuracy;
         end
     endfunction
 
-    // =========================================================================
-    // Skip-rate counter
-    // =========================================================================
+    
+    
+    
     integer total_booth_ops;
     integer skip_ops_natural;
     integer skip_ops_lsb;
@@ -165,9 +119,6 @@ module tb_boostvit_accuracy;
         else        lsb_scale = k & 8'b1100_0111;
     endfunction
 
-    // =========================================================================
-    // Helper tasks: load K / stream Q
-    // =========================================================================
     task automatic load_K_matrix (input reg use_lsb_scale, input reg which_ns);
         integer r, c;
         reg [127:0] col_packed;
@@ -213,9 +164,6 @@ module tb_boostvit_accuracy;
     end
     endtask
 
-    // =========================================================================
-    // Reference FP softmax for a given Q row
-    // =========================================================================
     real score_real  [0:15];
     real softmax_ref [0:15];
 
@@ -227,7 +175,7 @@ module tb_boostvit_accuracy;
             score_real[b] = 0.0;
             for (a = 0; a < 16; a = a + 1)
                 score_real[b] = score_real[b] + Q_real[tok][a] * K_real[b][a];
-            score_real[b] = score_real[b] * 0.25;   // /sqrt(dk=16)
+            score_real[b] = score_real[b] * 0.25;   
         end
         maxs = score_real[0];
         for (b = 1; b < 16; b = b + 1)
@@ -242,9 +190,6 @@ module tb_boostvit_accuracy;
     end
     endtask
 
-    // =========================================================================
-    // Per-token error statistics
-    // =========================================================================
     real sum_err_all, max_err_all, avg_sum_hw;
     integer num_tokens_tested;
 
@@ -284,9 +229,6 @@ module tb_boostvit_accuracy;
     end
     endtask
 
-    // =========================================================================
-    // Main
-    // =========================================================================
     integer i, j, tok;
     real skip_rate_natural, skip_rate_lsb;
 
@@ -306,9 +248,9 @@ module tb_boostvit_accuracy;
         rst = 0;
         @(posedge clk);
 
-        // =====================================================================
-        // Initialise K and Q with realistic ViT-like distribution
-        // =====================================================================
+        
+        
+        
         for (i = 0; i < 16; i = i + 1) begin
             for (j = 0; j < 16; j = j + 1) begin
                 K_mat[i][j]  = gen_k(i, j);
@@ -318,9 +260,9 @@ module tb_boostvit_accuracy;
             end
         end
 
-        // =====================================================================
-        // TEST 1: Skip rate  (paper 36.5% -> 56.4%)
-        // =====================================================================
+        
+        
+        
         $display("");
         $display("--- TEST 1: Booth Skip Rate ---");
         total_booth_ops = 0;
@@ -342,9 +284,9 @@ module tb_boostvit_accuracy;
         $display("  Skip-rate increase : %+6.1f%%   (paper: +20%%)",
                  skip_rate_lsb - skip_rate_natural);
 
-        // =====================================================================
-        // TEST 2: MSB identical-bit density  (paper Fig. 2: >90%)
-        // =====================================================================
+        
+        
+        
         $display("");
         $display("--- TEST 2: MSB Identical-Bit Density (Paper Fig. 2) ---");
         begin
@@ -366,23 +308,23 @@ module tb_boostvit_accuracy;
                      cnt3, total, (100.0 * cnt3) / total);
         end
 
-        // =====================================================================
-        // TEST 3: HW softmax WITH LSB scaling, multi-token
-        // =====================================================================
+        
+        
+        
         $display("");
         $display("--- TEST 3: HW Softmax accuracy (Booth-Friendly LSB Scaling ON) ---");
-        load_K_matrix(1'b1, 1'b0);  // scaled K into DUT (LSB=ON)
+        load_K_matrix(1'b1, 1'b0);  
         @(posedge clk);
         for (tok = 0; tok < 16; tok = tok + 4)
             run_one_token(tok);
 
-        // =====================================================================
-        // TEST 4: HW softmax WITHOUT LSB scaling, same tokens
-        // =====================================================================
+        
+        
+        
         $display("");
         $display("--- TEST 4: HW Softmax accuracy (Booth-Friendly LSB Scaling OFF) ---");
         rst = 1; repeat(4) @(posedge clk); rst = 0; @(posedge clk);
-        load_K_matrix(1'b0, 1'b1);  // raw K into DUT_NS (LSB=OFF)
+        load_K_matrix(1'b0, 1'b1);  
         @(posedge clk);
         begin
             real max_delta, delta;
@@ -397,7 +339,7 @@ module tb_boostvit_accuracy;
                 repeat(2) @(posedge clk);
                 cap_ns = lsm_ns;
 
-                // Re-run with LSB to capture matching output
+                
                 load_K_matrix(1'b1, 1'b0);
                 @(posedge clk);
                 stream_Q_token(tok);
@@ -419,9 +361,9 @@ module tb_boostvit_accuracy;
             $display("  (smaller = LSB scaling has less impact on result)");
         end
 
-        // =====================================================================
-        // SUMMARY
-        // =====================================================================
+        
+        
+        
         $display("");
         $display("================================================================");
         $display("  PAPER COMPARISON SUMMARY");
@@ -450,7 +392,7 @@ module tb_boostvit_accuracy;
         $finish;
     end
 
-    // Safety watchdog
+    
     initial begin
         #2000000;
         $display("[WATCHDOG] timeout");
